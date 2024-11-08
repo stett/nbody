@@ -1,2 +1,2 @@
 # stett/nbody
-A dependency-free n-body simulator using the Barnes-Hut method.
+A dependency-free, multi-threaded, n-body simulator which uses the Barnes-Hut method to achieve real time.
