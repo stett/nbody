@@ -1,15 +1,16 @@
 #include <GLFW/glfw3.h>
 #include <cassert>
+#include <iostream>
+#include "vk/vk_rhi.h"
+#include "win/win_platform.h"
 
 int main()
 {
-    /*
     // Create error function callback
     const auto glfw_error_callback = [](int error, const char *description) {
         fprintf(stderr, "GLFW error: %s\n", description);
     };
     glfwSetErrorCallback(glfw_error_callback);
-    */
 
     // Initialize GLFW
     assert(glfwInit());
@@ -29,7 +30,6 @@ int main()
     glfwSetKeyCallback(window, glfw_key_callback);
 
     {
-        /*
         // Create platform accessor
         hrr::PlatformConfig platform_config;
         std::unique_ptr<hrr::Platform> platform = std::make_unique<hrr::WinPlatform>(platform_config);
@@ -47,7 +47,6 @@ int main()
         // Create a render pipeline
         std::vector<hrr::RHIProgram*> programs { triangle_vert, triangle_frag };
         hrr::RHIPipeline* triangle_pipeline = rhi->create_pipeline(programs);
-        */
 
         // Loop until GLFW asks to close the window
         while (glfwWindowShouldClose(window) == false)
@@ -55,6 +54,7 @@ int main()
             glfwPollEvents();
 
             // render the frame
+            rhi->dispatch(triangle_pipeline);
         }
     }
 
