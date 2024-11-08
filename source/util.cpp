@@ -20,7 +20,7 @@ void nbody::util::disk(std::vector<Body>& bodies, size_t num,
     float star_mass)
 {
     // temp tree for velocity calculation
-    bh3::Tree tree({.size=2.f * max_disk_radius, .center={ center.x, center.y, center.z }});
+    bh::Tree tree({.size=2.f * inner_radius, .center={ center.x, center.y, center.z }});
 
     // make sure we have space in the bodies array
     bodies.reserve(bodies.size() + num);
@@ -35,8 +35,8 @@ void nbody::util::disk(std::vector<Body>& bodies, size_t num,
     tree.insert({ center.x, center.y, center.z }, central_mass);
 
     // make sure none of the stars are spawned inside the center
-    max_disk_radius = std::max(max_disk_radius, center_radius);
-    min_disk_radius = std::max(min_disk_radius, center_radius);
+    outer_radius = std::max(outer_radius, center_radius);
+    inner_radius = std::max(inner_radius, center_radius);
 
     // create the random number generator
     std::default_random_engine generator;
@@ -44,12 +44,12 @@ void nbody::util::disk(std::vector<Body>& bodies, size_t num,
 
     // get the coordinate vectors of the axis
     // https://math.stackexchange.com/questions/137362/how-to-find-perpendicular-vector-to-another-vector
-    const vec3 coord0 = vec3(
+    const Vector coord0 = {
         std::copysign(axis.z, axis.x),
         std::copysign(axis.z, axis.y),
         -std::copysign(axis.x, axis.z) - std::copysign(axis.y, axis.z)
-    );
-    const vec3 coord1 = cross(axis, coord0);
+    };
+    const Vector coord1 = cross(axis, coord0);
 
     // add the stars
     for (size_t i = 1; i < num; ++i)
@@ -57,12 +57,11 @@ void nbody::util::disk(std::vector<Body>& bodies, size_t num,
         const float t = float(i) / float(num-1);
         const float angle = t * 2.f * pi;
         const float rng = distribution(generator);
-        const float dist = min_disk_radius + (sqrt(rng) * (max_disk_radius - min_disk_radius));
-        const glm::vec3 star_coord0 = normalize(vec3(rotate(angle, axis) * vec4(coord0, 0)));
-        const glm::vec3 star_coord1 = normalize(cross(axis, star_coord0));
-        const glm::vec3 star_pos = center + star_coord0 * dist;
-        const glm::vec3 star_lin_vel = star_coord1;//vel + star_coord1 * std::sqrt(G * central_mass / (dist));
-        const float star_mass = min_star_mass + (distribution(generator) * (max_star_mass - min_star_mass));
+        const float dist = inner_radius + (sqrt(rng) * (outer_radius - inner_radius));
+        const Vector star_coord0 = (std::sin(angle) * coord0) + (std::cos(angle) * coord1);
+        const Vector star_coord1 = cross(axis, star_coord0);
+        const Vector star_pos = center + star_coord0 * dist;
+        const Vector star_lin_vel = star_coord1;//vel + star_coord1 * std::sqrt(G * central_mass / (dist));
         const float star_radius = compute_radius(star_mass, star_density);
         bodies.push_back({ .mass=star_mass, .radius=star_radius, .pos=star_pos, .vel=star_lin_vel });
         tree.insert({ star_pos.x, star_pos.y, star_pos.z }, star_mass);
@@ -71,17 +70,17 @@ void nbody::util::disk(std::vector<Body>& bodies, size_t num,
     // adjust velocites of bodies to have approximately circular orbits around central mass
     for (auto body = bodies_begin; body != bodies.end(); ++body)
     {
-        vec3 com = vec3(0);
+        Vector com = {0,0,0};
         float mass = 0;
-        tree.apply(body.pos, [&com, &mass](const Node& node)
+        tree.apply(body->pos, [&com, &mass](const bh::Node& node)
         {
             com = ((com * mass) + (node.com * node.mass)) / (mass + node.mass);
             mass += node.mass;
         });
 
-        const float dist = (com - body.pos).size();
+        const float dist = (com - body->pos).size();
         const float speed = std::sqrt(G * mass / dist);
-        body.vel = vel + (body.vel * speed);
+        body->vel = vel + (body->vel * speed);
     }
 
     /*

@@ -5,6 +5,7 @@
 #include <thread>
 #include <cmath>
 #include "sim.h"
+#include "constants.h"
 
 using nbody::Sim;
 
@@ -41,33 +42,26 @@ void Sim::accelerate()
     for (Body& body : bodies)
         acc_tree.insert(body.pos, body.mass);
 
-    // add acceleration due to one node
-    static const auto accelerate_body = [](Body& body, bh::Node& node)
-    {
-        const Vector delta = node.com - body.pos;
-        const float delta_sq = delta.size_sq();
-        const float radii_sq = body.radius * body.radius;
-
-        // if we're too close, don't apply a force
-        // NOTE: this condition no longer needed if we have collisions
-        if (delta_sq < radii_sq)
-            return;
-
-        // compute force of gravity
-        body.acc += G * node.mass * delta / (std::sqrt(delta_sq) * delta_sq);
-    };
-
     // accelerate all bodies within a range
     const auto accelerate_range = [this](const size_t index_min, const size_t index_max)
     {
-        index_max = std::min(index_max, bodies.size());
-        for (size_t i = index_min; i < index_max; ++i)
+        for (size_t i = index_min; i < std::min(index_max, bodies.size()); ++i)
         {
             Body& body = bodies[i];
             body.acc = {0,0,0};
             acc_tree.apply(body.pos, [&body](const bh::Node& node)
             {
-                accelerate_body(body, node);
+                const Vector delta = node.com - body.pos;
+                const float delta_sq = delta.size_sq();
+                const float radii_sq = body.radius * body.radius;
+
+                // if we're too close, don't apply a force
+                // NOTE: this condition no longer needed if we have collisions
+                if (delta_sq < radii_sq)
+                    return;
+
+                // compute force of gravity
+                body.acc += G * node.mass * delta / (std::sqrt(delta_sq) * delta_sq);
             });
         }
     };

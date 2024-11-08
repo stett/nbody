@@ -74,9 +74,9 @@ namespace nbody
             }
 
             // Test right & left faces
-            if (ray_intersect_coord<0>(ray.origin, ray.direction, out_point, out_length) ||
-                ray_intersect_coord<1>(ray.origin, ray.direction, out_point, out_length) ||
-                ray_intersect_coord<2>(ray.origin, ray.direction, out_point, out_length))
+            if (ray_intersect_coord<0>(ray, out_point, out_length) ||
+                ray_intersect_coord<1>(ray, out_point, out_length) ||
+                ray_intersect_coord<2>(ray, out_point, out_length))
                 return true;
 
             return false;
@@ -87,7 +87,7 @@ namespace nbody
         {
             Vector point;
             float length = std::numeric_limits<float>::max();
-            return ray_intersect(ray.origin, ray.direction, point, length);
+            return ray_intersect(ray, point, length);
         }
 
     private:

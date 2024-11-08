@@ -3,6 +3,11 @@
 
 namespace nbody
 {
+    struct Vector;
+    Vector operator*(float s, Vector v);
+    float dot(const Vector& a, const Vector& b);
+    Vector cross(const Vector& a, const Vector& b);
+
     struct Vector
     {
         float x = 0;
@@ -19,7 +24,7 @@ namespace nbody
 
         float size_sq() const
         {
-            return *this ^ *this;
+            return dot(*this, *this);
         }
 
         float size() const
@@ -30,7 +35,7 @@ namespace nbody
         float dist_sq(const Vector& other) const
         {
             const Vector delta = other - *this;
-            return delta ^ delta;
+            return dot(delta, delta);
         }
 
         bool operator==(const Vector& other) const = default;
@@ -39,10 +44,8 @@ namespace nbody
         Vector operator*(float s) const { return { x * s, y * s, z * s }; }
         Vector operator/(float s) const { return { x / s, y / s, z / s }; }
         Vector operator*(const Vector& other) const { return { x * other.x, y * other.y, z * other.z }; }
-        float operator^(const Vector& other) const { return (x * other.x) + (y * other.y) + (z * other.z); }
+        //float operator^(const Vector& other) const { return (x * other.x) + (y * other.y) + (z * other.z); }
         Vector& operator+=(const Vector& other) { x += other.x; y += other.y; z += other.z; return *this; }
         Vector& operator-=(const Vector& other) { x -= other.x; y -= other.y; z -= other.z; return *this; }
     };
-    
-    extern Vector operator*(float s, Vector v);
 }

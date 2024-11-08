@@ -1,6 +1,7 @@
 #pragma once
 #include <vector>
 #include "body.h"
+#include "constants.h"
 
 namespace nbody
 {

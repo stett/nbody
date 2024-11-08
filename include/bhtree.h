@@ -24,7 +24,7 @@ namespace nbody
         public:
 
             // initialize tree with bounds and a root node
-            Tree(const Bounds& bounds = { 1 }) : nodes{ {.bounds = bounds, .children = 0, .mass = 0, .com = {0, 0, 0}} } { }
+            Tree(const Bounds& bounds = { 1 }) : _nodes{ {.bounds = bounds, .children = 0, .mass = 0, .com = {0, 0, 0}} } { }
 
             // reserve space for at least this many nodes
             void reserve(const size_t max_nodes) { _nodes.reserve(max_nodes); }
@@ -45,10 +45,10 @@ namespace nbody
             void query(const Ray& ray, const std::function<bool(const Node&)>& visitor) const;
 
             // get root node bounds
-            const Bounds& bounds() const { return nodes[0].bounds; }
+            const Bounds& bounds() const { return _nodes[0].bounds; }
 
             // get list of all nodes
-            const std::array<Node>& nodes() const { return nodes; }
+            const std::vector<Node>& nodes() const { return _nodes; }
 
         private:
 

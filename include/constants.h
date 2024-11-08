@@ -1,3 +1,5 @@
+#pragma once
+
 namespace nbody
 {
     // setup some constants
