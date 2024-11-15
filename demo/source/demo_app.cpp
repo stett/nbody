@@ -9,14 +9,6 @@ void NBodyDemoApp::setup()
 {
     ImGui::Initialize();
 
-    {
-        // For high-dpi displays
-        const float content_scale = getDisplay()->getContentScale();
-        ImGuiIO &io = ImGui::GetIO();
-        io.DisplayFramebufferScale.x *= content_scale;
-        io.DisplayFramebufferScale.y *= content_scale;
-    }
-
     // setup window
     setWindowSize(1024, 1024);
 
@@ -44,7 +36,7 @@ void NBodyDemoApp::update()
 void NBodyDemoApp::update_time()
 {
     // Update dt
-    double new_time = getElapsedSeconds();
+    const double new_time = getElapsedSeconds();
     delta_time = float(new_time - time);
     time = new_time;
 }
@@ -67,6 +59,12 @@ void NBodyDemoApp::update_camera()
 
 void NBodyDemoApp::update_ui()
 {
+    // For high-dpi displays
+    const float content_scale = getDisplay()->getContentScale();
+    ImGuiIO &io = ImGui::GetIO();
+    io.DisplayFramebufferScale.x = content_scale;
+    io.DisplayFramebufferScale.y = content_scale;
+
     ImGui::Begin("settings");
     if (ImGui::Checkbox("run program", &run_program)) { }
     if (ImGui::Button("reset program")) { program->reset(); program->buffer(show_stars, show_structures); }
@@ -82,7 +80,20 @@ void NBodyDemoApp::update_program()
         return;
 
     const float sim_delta_time = 1.f / float(sim_hertz);
-    program->evolve(sim_delta_time);
+    if (sim_duration > sim_delta_time)
+    {
+        sim_duration = 0;
+    }
+
+    sim_accum += delta_time;
+    while (sim_accum > sim_delta_time && sim_duration <= sim_delta_time)
+    {
+        sim_accum -= sim_delta_time;
+        const double pre_sim_time = getElapsedSeconds();
+        program->evolve(sim_delta_time);
+        const double post_sim_time = getElapsedSeconds();
+        sim_duration = float(post_sim_time - pre_sim_time);
+    }
     program->buffer(show_stars, show_structures);
 }
 

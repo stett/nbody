@@ -31,7 +31,9 @@ private:
     // time
     double time = 0;
     float delta_time = 0;
-    uint32_t sim_hertz = 120;
+    float sim_duration = 0;
+    uint32_t sim_hertz = 60;
+    float sim_accum = 0;
 
     // mouse
     glm::ivec2 mouse_pos;

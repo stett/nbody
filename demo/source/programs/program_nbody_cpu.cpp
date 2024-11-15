@@ -83,8 +83,10 @@ void ProgramNBodyCPU::buffer(bool particles, bool structures)
             const nbody::Vector& center = node.bounds.center;
             float potential = 0;
             sim.acc_tree.apply(center, [&potential, &center](const nbody::bh::Node& node) {
-                const vec3 delta = vec3(node.com.x, node.com.y, node.com.z) - vec3(center.x, center.y, center.z);
-                potential += nbody::G * node.mass / dot(delta, delta);
+                const nbody::Vector delta = node.com - center;
+                const float delta_sq = delta.size_sq();
+                if (delta_sq > std::numeric_limits<float>::epsilon())
+                    potential += node.mass / delta_sq;
             });
             max_potential = std::max(max_potential, potential);
             avg_potential += potential * num_nodes_inv;
