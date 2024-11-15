@@ -11,7 +11,8 @@ namespace nbody
         float compute_radius(const float mass, const float density);
 
         // generate a disk shaped distribution of stars with a massive body in the center
-        void disk(std::vector<Body>& bodies, size_t num,
+        void disk(std::vector<Body>& bodies,
+            size_t num = 4096,
             const Vector& center = {0,0,0},
             const Vector& vel = {0,0,0},
             const Vector& axis = {0,0,1},

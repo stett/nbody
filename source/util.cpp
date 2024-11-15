@@ -1,9 +1,9 @@
 #include <cmath>
 #include <random>
 #include <algorithm>
-#include "util.h"
-#include "constants.h"
-#include "bhtree.h"
+#include "nbody/util.h"
+#include "nbody/constants.h"
+#include "nbody/bhtree.h"
 
 float nbody::util::compute_radius(const float mass, const float density)
 {
@@ -67,6 +67,7 @@ void nbody::util::disk(std::vector<Body>& bodies, size_t num,
         tree.insert({ star_pos.x, star_pos.y, star_pos.z }, star_mass);
     }
 
+    /*
     // adjust velocites of bodies to have approximately circular orbits around central mass
     for (auto body = bodies_begin; body != bodies.end(); ++body)
     {
@@ -82,21 +83,20 @@ void nbody::util::disk(std::vector<Body>& bodies, size_t num,
         const float speed = std::sqrt(G * mass / dist);
         body->vel = vel + (body->vel * speed);
     }
+     */
 
-    /*
     // sort bodies by distance to sun
-    std::sort(bodies_begin, bodies.end(), [&center](Body& a, Body&b) { return length2(a.pos - center) < length2(b.pos - center); });
+    std::sort(bodies_begin, bodies.end(), [&center](Body& a, Body&b) { return (a.pos - center).size_sq() < (b.pos - center).size_sq(); });
 
     // adjust velocities of each body so that they are
     float mass = 0;
     for (auto body = bodies_begin; body != bodies.end(); ++body)
     {
         mass += body->mass;
-        const float dist_sq = length2(body->pos - center);
+        const float dist_sq = (body->pos - center).size_sq();
         if (dist_sq < std::numeric_limits<float>::epsilon())
             continue;
         const float speed = sqrt(G * mass / sqrt(dist_sq));
         body->vel = vel + (body->vel * speed);
     }
-    */
 }

@@ -1,0 +1,6 @@
+"#version 150\n"
+"out vec4 oColor;"
+"void main(void)"
+"{"
+"    oColor = vec4(1,1,1,1);"
+"}"

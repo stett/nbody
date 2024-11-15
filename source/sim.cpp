@@ -3,8 +3,8 @@
 #include <future>
 #include <thread>
 #include <cmath>
-#include "sim.h"
-#include "constants.h"
+#include "nbody/sim.h"
+#include "nbody/constants.h"
 
 using nbody::Sim;
 

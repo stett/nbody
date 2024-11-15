@@ -1,7 +1,7 @@
 #include <random>
 #include <catch2/catch_test_macros.hpp>
-#include "bhtree.h"
-#include "vector.h"
+#include "nbody/bhtree.h"
+#include "nbody/vector.h"
 
 using nbody::Vector;
 using nbody::bh::Node;

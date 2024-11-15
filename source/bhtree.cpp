@@ -1,4 +1,4 @@
-#include "bhtree.h"
+#include "nbody/bhtree.h"
 
 using nbody::bh::Node;
 using nbody::bh::Tree;
