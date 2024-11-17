@@ -66,6 +66,8 @@ void Sim::accelerate()
     };
 
     // spread acceleration across as many threads as possible
+
+    // Faster on win?
     const size_t num_threads = std::thread::hardware_concurrency();
     const size_t num_per_thread = bodies.size() / num_threads;
     std::vector<std::future<void>> futures;
@@ -76,4 +78,18 @@ void Sim::accelerate()
             (i + 1) * num_per_thread));
     for (std::future<void>& future : futures)
         future.wait();
+
+    /*
+    // Faster on mac?
+    const size_t num_threads = std::thread::hardware_concurrency();
+    const size_t num_per_thread = bodies.size() / num_threads;
+    std::vector<std::thread> threads;
+    threads.reserve(num_threads);
+    for (size_t i = 0; i < num_threads; ++i)
+        threads.emplace_back(accelerate_range,
+                             std::min((i + 0) * num_per_thread, bodies.size()),
+                             std::min((i + 1) * num_per_thread, bodies.size()));
+    for (std::thread& thread : threads)
+        thread.join();
+    */
 }

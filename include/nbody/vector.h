@@ -38,13 +38,17 @@ namespace nbody
             return dot(delta, delta);
         }
 
+        Vector norm() const
+        {
+            return (*this)/size();
+        }
+
         bool operator==(const Vector& other) const = default;
         Vector operator+(const Vector& other) const { return { x + other.x, y + other.y, z + other.z }; }
         Vector operator-(const Vector& other) const { return { x - other.x, y - other.y, z - other.z }; }
         Vector operator*(float s) const { return { x * s, y * s, z * s }; }
         Vector operator/(float s) const { return { x / s, y / s, z / s }; }
         Vector operator*(const Vector& other) const { return { x * other.x, y * other.y, z * other.z }; }
-        //float operator^(const Vector& other) const { return (x * other.x) + (y * other.y) + (z * other.z); }
         Vector& operator+=(const Vector& other) { x += other.x; y += other.y; z += other.z; return *this; }
         Vector& operator-=(const Vector& other) { x -= other.x; y -= other.y; z -= other.z; return *this; }
     };

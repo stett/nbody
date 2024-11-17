@@ -33,8 +33,8 @@ void ProgramNBodyCPU::setup()
 void ProgramNBodyCPU::reset()
 {
     // create the default disk
-    sim.bodies.clear();
-    nbody::util::disk(sim.bodies);
+    sim.bodies.resize(4096);
+    nbody::util::disk(sim.bodies.begin(), sim.bodies.end());
     sim.accelerate();
 }
 
