@@ -65,7 +65,13 @@ void NBodyDemoApp::update_ui()
     io.DisplayFramebufferScale.x = content_scale;
     io.DisplayFramebufferScale.y = content_scale;
 
+    // get hz
+    float fps = 1.f / delta_time;
+    uint32_t hz = uint32_t(fps);
+
+    //
     ImGui::Begin("settings");
+    ImGui::Text("%d hz", hz);
     if (ImGui::Checkbox("run program", &run_program)) { }
     if (ImGui::Button("reset program")) { program->reset(); program->buffer(show_stars, show_structures); }
     if (ImGui::Checkbox("show stars", &show_stars)) { program->buffer(show_stars, show_structures); }
