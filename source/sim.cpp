@@ -16,8 +16,7 @@ void Sim::update(float dt)
 
 void Sim::integrate(float dt)
 {
-    // euler integration for all bodies
-    for (Body& body : bodies)
+    visit([this, dt](Body& body)
     {
         // semi-implicit euler is pretty good for gravitational forces
         body.vel += body.acc * dt;
@@ -30,7 +29,7 @@ void Sim::integrate(float dt)
             while (body.pos[i] < -size*.5)
                 body.pos[i] += size - std::numeric_limits<float>::epsilon();
         }
-    }
+    });
 }
 
 void Sim::accelerate()
