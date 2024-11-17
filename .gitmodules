@@ -4,3 +4,6 @@
 [submodule "demo/external/Cinder"]
 	path = demo/external/Cinder
 	url = https://github.com/stett/Cinder.git
+[submodule "external/thread-pool"]
+	path = external/thread-pool
+	url = git@github.com:bshoshany/thread-pool.git

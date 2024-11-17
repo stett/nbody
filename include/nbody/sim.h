@@ -1,5 +1,6 @@
 #pragma once
 #include <vector>
+#include "BS_thread_pool.hpp"
 #include "body.h"
 #include "bhtree.h"
 
@@ -10,6 +11,7 @@ namespace nbody
         float size = 1000.f;
         std::vector<Body> bodies;
         bh::Tree acc_tree;
+        BS::thread_pool pool;
 
         void update(float dt);
         void integrate(float dt);
