@@ -127,10 +127,8 @@ namespace nbody
                     }
                 }
             }
-            else
-            {
-                return false;
-            }
+
+            return false;
         }
     };
 }
