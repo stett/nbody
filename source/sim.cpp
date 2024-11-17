@@ -41,67 +41,41 @@ void Sim::accelerate()
     for (Body& body : bodies)
         acc_tree.insert(body.pos, body.mass);
 
-    // accelerate all bodies within a range
-    const auto accelerate_range = [this](const size_t index_min, const size_t index_max)
+    // accelerate all bodies
+    visit([this](Body& body)
     {
-        for (size_t i = index_min; i < std::min(index_max, bodies.size()); ++i)
+        body.acc = {0,0,0};
+        acc_tree.apply(body.pos, [&body](const bh::Node& node)
         {
-            Body& body = bodies[i];
-            body.acc = {0,0,0};
-            acc_tree.apply(body.pos, [&body](const bh::Node& node)
-            {
-                const Vector delta = node.com - body.pos;
-                const float delta_sq = delta.size_sq();
-                const float radii_sq = body.radius * body.radius;
+            const Vector delta = node.com - body.pos;
+            const float delta_sq = delta.size_sq();
+            const float radii_sq = body.radius * body.radius;
 
-                // if we're too close, don't apply a force
-                // NOTE: this condition no longer needed if we have collisions
-                if (delta_sq < radii_sq)
-                    return;
+            // if we're too close, don't apply a force
+            // NOTE: this condition no longer needed if we have collisions
+            if (delta_sq < radii_sq)
+                return;
 
-                // compute force of gravity
-                body.acc += G * node.mass * delta / (std::sqrt(delta_sq) * delta_sq);
-            });
-        }
-    };
+            // compute force of gravity
+            body.acc += G * node.mass * delta / (std::sqrt(delta_sq) * delta_sq);
+        });
+    });
+}
 
-    // spread acceleration across as many threads as possible
-
+void Sim::visit(const std::function<void(Body& body)>& func)
+{
+    // spread visit function across thread pools
     const size_t num_threads = std::thread::hardware_concurrency();
     const size_t num_per_thread = bodies.size() / num_threads;
     std::vector<std::future<void>> futures;
     futures.reserve(num_threads);
     for (size_t i = 0; i < num_threads; ++i)
-        futures.emplace_back(pool.submit_task([&accelerate_range, i, num_per_thread]()
-            { accelerate_range((i + 0) * num_per_thread, (i + 1) * num_per_thread); }));
+        futures.emplace_back(pool.submit_task([this, i, num_per_thread, &func]() {
+            std::for_each(
+                bodies.begin() + (i + 0) * num_per_thread,
+                bodies.begin() + (i + 1) * num_per_thread,
+                func);
+        }));
     for (std::future<void>& future : futures)
         future.wait();
-
-    /*
-    // Faster on win?
-    const size_t num_threads = std::thread::hardware_concurrency();
-    const size_t num_per_thread = bodies.size() / num_threads;
-    std::vector<std::future<void>> futures;
-    futures.reserve(num_threads);
-    for (size_t i = 0; i < num_threads; ++i)
-        futures.emplace_back(std::async(std::launch::deferred, accelerate_range,
-            (i + 0) * num_per_thread,
-            (i + 1) * num_per_thread));
-    for (std::future<void>& future : futures)
-        future.wait();
-    */
-
-    /*
-    // Faster on mac?
-    const size_t num_threads = std::thread::hardware_concurrency();
-    const size_t num_per_thread = bodies.size() / num_threads;
-    std::vector<std::thread> threads;
-    threads.reserve(num_threads);
-    for (size_t i = 0; i < num_threads; ++i)
-        threads.emplace_back(accelerate_range,
-                             std::min((i + 0) * num_per_thread, bodies.size()),
-                             std::min((i + 1) * num_per_thread, bodies.size()));
-    for (std::thread& thread : threads)
-        thread.join();
-    */
 }
