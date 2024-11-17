@@ -12,9 +12,9 @@ namespace nbody
 
         struct DiskArgs
         {
-            const Vector& center = {0,0,0};
-            const Vector& vel = {0,0,0};
-            const Vector& axis = {0,0,1};
+            const Vector center = {0,0,0};
+            const Vector vel = {0,0,0};
+            const Vector axis = {0,0,1};
             float inner_radius = 0.f;
             float outer_radius = 250.f;
             float central_mass = sagittarius_mass;
@@ -25,6 +25,6 @@ namespace nbody
         void disk(
             std::vector<Body>::iterator begin,
             std::vector<Body>::iterator end,
-            DiskArgs args);
+            DiskArgs args = DiskArgs());
     }
 }
