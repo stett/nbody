@@ -17,6 +17,7 @@ namespace nbody
             const Vector axis = {0,0,1};
             float inner_radius = 0.f;
             float outer_radius = 250.f;
+            float thickness = 1.f;
             float central_mass = sagittarius_mass;
             float star_mass = solar_mass;
         };

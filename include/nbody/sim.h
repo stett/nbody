@@ -9,7 +9,7 @@ namespace nbody
 {
     struct Sim
     {
-        float size = 1000.f;
+        float size = 10000.f;
         std::vector<Body> bodies;
         bh::Tree acc_tree;
         BS::thread_pool pool;

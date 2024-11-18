@@ -34,7 +34,8 @@ void nbody::util::disk(
 
     // create the random number generator
     std::default_random_engine generator;
-    std::uniform_real_distribution<float> distribution(0, 1);
+    std::uniform_real_distribution<float> uniform_distribution(0, 1);
+    std::normal_distribution<float> gaussian_distribution(0, .5);
 
     // get the coordinate vectors of the axis
     // https://math.stackexchange.com/questions/137362/how-to-find-perpendicular-vector-to-another-vector
@@ -50,11 +51,16 @@ void nbody::util::disk(
     {
         const float t = float(i) / float(num-1);
         const float angle = t * 2.f * pi;
-        const float rng = distribution(generator);
-        const float dist = args.inner_radius + (sqrt(rng) * (args.outer_radius - args.inner_radius));
+
+        // distance from origin, perpendicular to axis
+        const float dist = args.inner_radius + (sqrt(uniform_distribution(generator)) * (args.outer_radius - args.inner_radius));
+
+        // displacement from plane along axis
+        const float disp = ((args.outer_radius - dist) / args.outer_radius) * (args.thickness * center_radius) * gaussian_distribution(generator);
+
         const Vector star_coord0 = ((std::sin(angle) * coord0) + (std::cos(angle) * coord1)).norm();
         const Vector star_coord1 = (cross(args.axis, star_coord0)).norm();
-        const Vector star_pos = args.center + star_coord0 * dist;
+        const Vector star_pos = args.center + (star_coord0 * dist) + (args.axis * disp);
         const Vector star_lin_vel = star_coord1;
         const float star_radius = compute_radius(args.star_mass, star_density);
         *(body++) = { .mass=args.star_mass, .radius=star_radius, .pos=star_pos, .vel=star_lin_vel };
