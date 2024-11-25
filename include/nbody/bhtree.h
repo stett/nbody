@@ -5,6 +5,7 @@
 #include "vector.h"
 #include "bounds.h"
 #include "ray.h"
+#include "body.h"
 
 namespace nbody
 {
@@ -24,13 +25,13 @@ namespace nbody
         public:
 
             // initialize tree with bounds and a root node
-            Tree(const Bounds& bounds = { 1 }) : _nodes{ {.bounds = bounds, .children = 0, .mass = 0, .com = {0, 0, 0}} } { }
+            Tree(const Bounds& bounds = { 1 }, size_t max_nodes = 1024);
 
             // reserve space for at least this many nodes
-            void reserve(const size_t max_nodes) { _nodes.reserve(max_nodes); }
+            void reserve(size_t max_nodes);
 
-            // insert a point mass into the tree
-            void insert(const Vector& position, const float mass);
+            // rebuild tree to include
+            void rebuild(size_t max_nodes, const Body* bodies, size_t num_bodies);
 
             // clear all masses and set new bounds
             void clear(const Bounds& new_bounds);
@@ -52,11 +53,24 @@ namespace nbody
 
         private:
 
+            void stage(uint32_t num_stages, const Body* bodies, size_t num_bodies);
+
+            void merge(uint32_t num_stages);
+
+            // insert a range of bodies into a range of nodes
+            static void insert(Node* nodes, uint32_t nodes_begin, uint32_t nodes_end, const Body* bodies_begin, const Body* bodies_end);
+
+            // insert a single body into a range of nodes
+            static void insert(Node* nodes, uint32_t& num_nodes, uint32_t nodes_begin, uint32_t nodes_end, const Body& body);
+
             // accumulate mass to a node
-            void accumulate(const uint32_t node_index, const Vector& position, const float mass);
+            static void accumulate(Node& node, const Vector& position, const float mass);
 
             // array of all nodes in data structure
             std::vector<Node> _nodes;
+
+            // array for staging all nodes in parallel insertion algorithm
+            std::vector<Node> _stage;
         };
     }
 }
