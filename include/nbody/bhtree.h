@@ -24,8 +24,11 @@ namespace nbody
         {
         public:
 
-            // initialize tree with bounds and a root node
+            // initialize tree with bounds, a node limit, and optionally a slice of bodies
             Tree(const Bounds& bounds = { 1 }, size_t max_nodes = 1024, const Body* bodies = nullptr, size_t num_bodies = 0);
+
+            // initialize tree with bounds, a node limit, and an array of bodies
+            Tree(const Bounds& bounds, size_t max_nodes, const std::vector<Body>& bodies) : Tree(bounds, max_nodes, bodies.data(), bodies.size()) { }
 
             // reserve space for at least this many nodes
             void reserve(size_t max_nodes);
