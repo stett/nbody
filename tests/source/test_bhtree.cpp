@@ -51,13 +51,19 @@ TEST_CASE("insert 2 particles in different quadrants", "[bh tree 3]")
 	const uint8_t q0 = tree.bounds().quadrant(p0);
 	const uint8_t q1 = tree.bounds().quadrant(p1);
 	const int32_t c0 = tree.nodes()[0].children + q0;
-    const int32_t c1 = tree.nodes()[0].children + q1;
+    //const int32_t c1 = tree.nodes()[0].children + q1;
     REQUIRE(tree.nodes()[c0].mass == m0);
     REQUIRE(compare(tree.nodes()[c0].com, p0));
+    uint32_t node_index = c0;
+    while (tree.nodes()[0].bounds.quadrant(tree.nodes()[node_index].com) != q1)
+        node_index = tree.nodes()[node_index].next;
+    REQUIRE(tree.nodes()[node_index].mass == m1);
+    REQUIRE(compare(tree.nodes()[node_index].com, p1));
+
     // NOTE: ... just realized, this isn't going to work with the parallel insertion because
     // in that scheme children can't be next to each other :|
-    REQUIRE(tree.nodes()[c1].mass == m1);
-    REQUIRE(compare(tree.nodes()[c1].com, p1));
+    //REQUIRE(tree.nodes()[c1].mass == m1);
+    //REQUIRE(compare(tree.nodes()[c1].com, p1));
 }
 
 /*
