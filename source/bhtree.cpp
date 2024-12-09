@@ -1,12 +1,18 @@
 #include <cassert>
+#include <algorithm>
 #include "nbody/bhtree.h"
 
 using nbody::bh::Node;
 using nbody::bh::Tree;
 
-Tree::Tree(const Bounds& bounds, const size_t max_nodes)
+Tree::Tree(const Bounds& bounds, const size_t max_nodes, const Body* bodies, size_t num_bodies)
 {
+    // allocate memory for nodes
     reserve(max_nodes);
+
+    // if we were given a set of bodies, build the tree
+    if (bodies != nullptr && num_bodies > 0)
+        build(bodies, num_bodies);
 }
 
 void Tree::reserve(const size_t max_nodes)
@@ -15,13 +21,18 @@ void Tree::reserve(const size_t max_nodes)
     _stage.resize(max_nodes);
 }
 
-void Tree::rebuild(size_t max_nodes, const Body* bodies, size_t num_bodies)
+void Tree::build(const std::vector<Body>& bodies)
+{
+    build(bodies.data(), bodies.size());
+}
+
+void Tree::build(const Body* bodies, size_t num_bodies)
 {
     // number of staging trees to use
     const uint32_t num_stages = 8;
 
-    // reserve space for a fixed number of nodes
-    reserve(max_nodes);
+    // clear all data before attempting to insert new data
+    clear();
 
     // in parallel, build a bunch of smaller trees in staging memory (per stage)
     stage(num_stages, bodies, num_bodies);
@@ -34,15 +45,15 @@ void Tree::stage(const uint32_t num_stages, const Body* bodies, size_t num_bodie
 {
     // insert 1/8th of the bodies each into 1/8th of the staging nodes array.
     const size_t num_nodes = _stage.size();
-    const size_t bodies_per_stage = num_bodies / num_stages;
-    const size_t nodes_per_stage = num_nodes / num_stages;
+    const size_t bodies_per_stage = std::max<size_t>(1, num_bodies / num_stages);
+    const size_t nodes_per_stage = std::max<size_t>(1, num_nodes / num_stages);
     // TODO: Parallelize this loop
     for (size_t s = 0; s < num_stages; ++s)
     {
-        const uint32_t nodes_begin = (s + 0) * nodes_per_stage;
-        const uint32_t nodes_end = (s + 1) * nodes_per_stage;
-        const uint32_t bodies_begin = (s + 0) * bodies_per_stage;
-        const uint32_t bodies_end = (s + 1) * bodies_per_stage;
+        const uint32_t nodes_begin = std::min<uint32_t>(num_nodes, (s + 0) * nodes_per_stage);
+        const uint32_t nodes_end = std::min<uint32_t>(num_nodes, (s + 1) * nodes_per_stage);
+        const uint32_t bodies_begin = std::min<uint32_t>(num_bodies, (s + 0) * bodies_per_stage);
+        const uint32_t bodies_end = std::min<uint32_t>(num_bodies, (s + 1) * bodies_per_stage);
         insert(_stage.data(), nodes_begin, nodes_end, bodies + bodies_begin, bodies + bodies_end);
     }
 }
@@ -57,6 +68,13 @@ void Tree::merge(const uint32_t num_stages)
 
     // link the root node to it's first child in quadrant 0 (where we know that it will be)
     _nodes[0].children = 1;
+
+    // sum the masses of the stages in the root node
+    // NOTE: This loop can't be parallelized
+    _nodes[0].mass = 0;
+    _nodes[0].com = {0, 0, 0};
+    for (uint32_t stage_index = 0; stage_index < nodes_per_stage * num_stages; stage_index += nodes_per_stage)
+        accumulate(_nodes[0], _stage[stage_index].com, _stage[stage_index].mass);
 
     // TODO: Parallelize this loop
     for (uint8_t q = 0; q < num_quadrants; ++q)
@@ -78,15 +96,22 @@ void Tree::merge(const uint32_t num_stages)
         for (uint32_t s = 0; s < num_stages; ++s)
         {
             // get the range of nodes to copy from in this stage
-            const uint32_t stage_begin = (s + 0) + nodes_per_stage;
-            const uint32_t stage_end = (s + 1) + nodes_per_stage;
+            const uint32_t stage_begin = (s + 0) * nodes_per_stage;
+            const uint32_t stage_end = (s + 1) * nodes_per_stage;
 
-            // if this stage root has no children, nothing to add
+            // 1. if this stage has no children and its com is in the quadrant, start with the root node
+            // 2. if this stage has no children and its com is NOT in the quadrant, skip this stage
+            // 3. if this stage has children, start with the child in this quadrant
+            uint32_t stage_index;
             if (_stage[stage_begin].children == 0)
-                continue;
+            {
+                if (_stage[stage_begin].bounds.quadrant(_stage[stage_begin].com) == q)
+                    stage_index = stage_begin;
+                else continue;
+            }
+            else stage_index = _stage[stage_begin].children + q;
 
             // if this quadrant child has no mass, nothing to add
-            uint32_t stage_index = _stage[stage_begin].children + q;
             if (_stage[stage_index].mass == 0)
                 continue;
 
@@ -245,6 +270,8 @@ void Tree::apply(const Vector& pos, const std::function<void(const Node& node)>&
 
 void Tree::clear(const Bounds& new_bounds)
 {
+    std::fill(_nodes.begin(), _nodes.end(), Node{ });
+    std::fill(_stage.begin(), _stage.end(), Node{ });
     _nodes[0] = { new_bounds };
 }
 

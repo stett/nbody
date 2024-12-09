@@ -25,13 +25,16 @@ namespace nbody
         public:
 
             // initialize tree with bounds and a root node
-            Tree(const Bounds& bounds = { 1 }, size_t max_nodes = 1024);
+            Tree(const Bounds& bounds = { 1 }, size_t max_nodes = 1024, const Body* bodies = nullptr, size_t num_bodies = 0);
 
             // reserve space for at least this many nodes
             void reserve(size_t max_nodes);
 
-            // rebuild tree to include
-            void rebuild(size_t max_nodes, const Body* bodies, size_t num_bodies);
+            // rebuild tree to include a number of bodies, using a reference to a vector
+            void build(const std::vector<Body>& bodies);
+
+            // rebuild tree to include a number of bodies, using an offset and count
+            void build(const Body* bodies, size_t num_bodies);
 
             // clear all masses and set new bounds
             void clear(const Bounds& new_bounds);

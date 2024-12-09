@@ -35,10 +35,7 @@ void Sim::integrate(float dt)
 void Sim::accelerate()
 {
     // insert all bodies into the acceleration tree
-    acc_tree.clear({ .size = size });
-    acc_tree.reserve(bodies.size() << 2);
-    for (Body& body : bodies)
-        acc_tree.insert(body.pos, body.mass);
+    acc_tree.build(bodies.data(), bodies.size());
 
     // accelerate all bodies
     visit([this](Body& body)

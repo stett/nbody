@@ -15,9 +15,6 @@ void nbody::util::disk(
     std::vector<Body>::iterator end,
     DiskArgs args)
 {
-    // temp tree for velocity calculation
-    bh::Tree tree({.size=2.f * args.outer_radius, .center={ args.center.x, args.center.y, args.center.z }});
-
     // make sure we have space in the bodies array
     const size_t num = end - begin;
     if (num == 0) { return; }
@@ -26,7 +23,7 @@ void nbody::util::disk(
     const float center_radius = compute_radius(args.central_mass, star_density);
     auto body = begin;
     *(body++) = Body{ .mass=args.central_mass, .radius=center_radius, .pos=args.center, .vel=args.vel };
-    tree.insert({ args.center.x, args.center.y, args.center.z }, args.central_mass);
+    //tree.insert({ args.center.x, args.center.y, args.center.z }, args.central_mass);
 
     // make sure none of the stars are spawned inside the center
     args.outer_radius = std::max(args.outer_radius, center_radius);
@@ -64,8 +61,11 @@ void nbody::util::disk(
         const Vector star_lin_vel = star_coord1;
         const float star_radius = compute_radius(args.star_mass, star_density);
         *(body++) = { .mass=args.star_mass, .radius=star_radius, .pos=star_pos, .vel=star_lin_vel };
-        tree.insert({ star_pos.x, star_pos.y, star_pos.z }, args.star_mass);
+        //tree.insert({ star_pos.x, star_pos.y, star_pos.z }, args.star_mass);
     }
+
+    // insert bodies into a temporary tree for velocity calculation
+    bh::Tree tree({.size=2.f * args.outer_radius, .center={ args.center.x, args.center.y, args.center.z }}, num << 2, &(*begin), num);
 
     // adjust velocites of bodies to have approximately circular orbits around central mass
     for (body = begin; body != end; ++body)
