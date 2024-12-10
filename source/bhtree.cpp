@@ -17,8 +17,8 @@ Tree::Tree(const Bounds& bounds, const size_t max_nodes, const Body* bodies, siz
 
 void Tree::reserve(const size_t max_nodes)
 {
-    _nodes.resize(max_nodes);
-    _stage.resize(max_nodes);
+    _nodes.resize(std::max<size_t>(16, max_nodes));
+    _stage.resize(std::max<size_t>(16, max_nodes));
 }
 
 void Tree::build(const std::vector<Body>& bodies)
@@ -63,8 +63,8 @@ void Tree::merge(const uint32_t num_stages)
     const size_t stage_capacity = _stage.size();
     const size_t node_capacity = _nodes.size();
     const uint8_t num_quadrants = 8;
-    const size_t nodes_per_stage = stage_capacity / num_stages;
-    const size_t nodes_per_quadrant = (node_capacity-1) / num_quadrants; // sub 1 for the root node
+    const size_t nodes_per_stage = std::max<size_t>(1, stage_capacity / num_stages);
+    const size_t nodes_per_quadrant = std::max<size_t>(1, (node_capacity - 1) / num_quadrants); // sub 1 for the root node
 
     // link the root node to it's first child in quadrant 0 (where we know that it will be)
     _nodes[0].children = 1;
@@ -79,9 +79,10 @@ void Tree::merge(const uint32_t num_stages)
     // TODO: Parallelize this loop
     for (uint8_t q = 0; q < num_quadrants; ++q)
     {
-        // get the range of nodes to write to in this quardrant
+        // get the range of nodes to write to in this quadrant
         const uint32_t nodes_begin = 1 + (q + 0) * nodes_per_quadrant;
         const uint32_t nodes_end = 1 + (q + 1) * nodes_per_quadrant;
+        assert(nodes_end <= node_capacity);
 
         // create the root node for this quadrant.
         // each quadrant root links to the next one, except for the last one
@@ -98,6 +99,7 @@ void Tree::merge(const uint32_t num_stages)
             // get the range of nodes to copy from in this stage
             const uint32_t stage_begin = (s + 0) * nodes_per_stage;
             const uint32_t stage_end = (s + 1) * nodes_per_stage;
+            assert(stage_end <= stage_capacity);
 
             // 1. if this stage has no children and its com is in the quadrant, start with the root node
             // 2. if this stage has no children and its com is NOT in the quadrant, skip this stage
@@ -179,6 +181,7 @@ void Tree::insert(Node* nodes, uint32_t& num_nodes, const uint32_t nodes_begin, 
         // Add 8 children for this node
         const Bounds node_bounds = node.bounds;
         {
+            assert(num_nodes + 8 <= node_capacity);
             const uint32_t child = nodes_begin + num_nodes;
             node.children = child;
             for (uint8_t q = 0; q < 7; ++q)

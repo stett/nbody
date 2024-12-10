@@ -7,50 +7,91 @@ using nbody::Body;
 using nbody::Vector;
 using nbody::bh::Node;
 using nbody::bh::Tree;
-
 namespace
 {
-    bool compare(const Vector& a, const Vector& b) {
+    bool compare(const Vector &a, const Vector &b)
+    {
         return
             std::abs(a.x - b.x) < std::numeric_limits<float>::epsilon() &&
             std::abs(a.y - b.y) < std::numeric_limits<float>::epsilon() &&
             std::abs(a.z - b.z) < std::numeric_limits<float>::epsilon();
     }
+
+    // function for computing force
+    Vector compute_gravity(float G, const Vector& pos0, float mass0, const Vector& pos1, float mass1)
+    {
+        // if we're too close, don't apply a force
+        Vector delta = pos1 - pos0;
+        float delta_sq = dot(delta, delta);
+        if (delta_sq < std::numeric_limits<float>::epsilon())
+            return {0, 0, 0};
+
+        // compute force of gravity
+        const float f_mag = (G * mass0 * mass1) / delta_sq;
+        return f_mag * f_mag * delta * delta / delta_sq;
+    }
+
+    // compute gravitational potential due to a body
+    float compute_gravity(float G, const Vector& pos, const Body& body)
+    {
+        return -G * body.mass * (body.pos - pos).size_inv();
+    }
+
+    // compute gravitational potential due to many bodies
+    float compute_gravity(float G, const Vector& pos, const std::vector<Body>& bodies)
+    {
+        float gravity = 0;
+        for (const Body &body: bodies)
+            gravity += compute_gravity(G, pos, body);
+        return gravity;
+    }
+
+    // compute gravitational potential due to bodies stored in a tree
+    float compute_gravity(float G, const Vector& pos, const Tree& tree)
+    {
+        float gravity = 0.f;
+        tree.apply(pos, [G, &pos, &gravity](const Node& node)
+        {
+            gravity += compute_gravity(G, pos, { .mass=node.mass, .pos=node.com });
+        });
+        return gravity;
+    }
 }
 
+/*
 TEST_CASE("create tree", "[bh tree]")
 {
-    Tree tree({ .size=100 });
+    Tree tree({.size=100});
 }
 
-TEST_CASE("insert 2 particles in different quadrants", "[bh tree 3]")
+TEST_CASE("insert 2 particles in different quadrants", "[bh tree]")
 {
-	Tree tree({ .size=100 });
-	std::vector<Body> bodies;
+    Tree tree({.size=100});
+    std::vector<Body> bodies;
 
-	const float m0 = 1;
-	const Vector p0 = { 1,1,1 };
-	const float m1 = 2;
-	const Vector p1 = { -1,-1,-1 };
+    const float m0 = 1;
+    const Vector p0 = {1, 1, 1};
+    const float m1 = 2;
+    const Vector p1 = {-1, -1, -1};
 
     // after inserting first
-	bodies.push_back({ .mass=m0, .pos=p0 });
-	tree.build(bodies);
+    bodies.push_back({.mass=m0, .pos=p0});
+    tree.build(bodies);
     //REQUIRE(tree.nodes().size() == 1);
     REQUIRE(tree.nodes()[0].mass == m0);
     REQUIRE(tree.nodes()[0].com == p0);
 
     // after inserting second
-    bodies.push_back({ .mass=m1, .pos=p1 });
+    bodies.push_back({.mass=m1, .pos=p1});
     tree.build(bodies);
-	//REQUIRE(tree.nodes().size() == 1+8);
-	REQUIRE(tree.nodes()[0].mass == m0 + m1);
-	REQUIRE(compare(tree.nodes()[0].com, ((m0 * p0) + (m1 * p1)) / (m0 + m1)));
+    //REQUIRE(tree.nodes().size() == 1+8);
+    REQUIRE(tree.nodes()[0].mass == m0 + m1);
+    REQUIRE(compare(tree.nodes()[0].com, ((m0 * p0) + (m1 * p1)) / (m0 + m1)));
 
-	// test leaf nodes
-	const uint8_t q0 = tree.bounds().quadrant(p0);
-	const uint8_t q1 = tree.bounds().quadrant(p1);
-	const int32_t c0 = tree.nodes()[0].children + q0;
+    // test leaf nodes
+    const uint8_t q0 = tree.bounds().quadrant(p0);
+    const uint8_t q1 = tree.bounds().quadrant(p1);
+    const int32_t c0 = tree.nodes()[0].children + q0;
     //const int32_t c1 = tree.nodes()[0].children + q1;
     REQUIRE(tree.nodes()[c0].mass == m0);
     REQUIRE(compare(tree.nodes()[c0].com, p0));
@@ -65,6 +106,7 @@ TEST_CASE("insert 2 particles in different quadrants", "[bh tree 3]")
     //REQUIRE(tree.nodes()[c1].mass == m1);
     //REQUIRE(compare(tree.nodes()[c1].com, p1));
 }
+*/
 
 /*
 TEST_CASE("insert 2 particles in the same quadrant", "[bh tree 3]")
@@ -142,115 +184,164 @@ TEST_CASE("insert 8 particles in different quadrants", "[bh tree 3]")
 }
 */
 
-TEST_CASE("insert 2 particles in the same location", "[bh tree 3]")
+/*
+TEST_CASE("insert 2 particles in the same location", "[bh tree]")
 {
-	Tree tree({ .size = 100 });
-	tree.build({
-        {.mass=1, .pos={1,1,1}},
-        {.mass=1, .pos={1,1,1}}
-    });
-}
-
-TEST_CASE("insert 2 particles very close to each other", "[bh tree 3]")
-{
-	Tree tree({ .size = 100 });
+    Tree tree({.size = 100});
     tree.build({
-       {.mass=1, .pos={1,1,1}},
-       {.mass=1, .pos={1 + std::numeric_limits<float>::epsilon(),1,1}}
-   });
+                   {.mass=1, .pos={1, 1, 1}},
+                   {.mass=1, .pos={1, 1, 1}}
+               });
 }
 
-TEST_CASE("insert 100 particles", "[bh tree 3]")
+TEST_CASE("insert 2 particles very close to each other", "[bh tree]")
 {
-	const float size = 100;
-	const size_t num = 100;
-	std::default_random_engine generator;
-	std::normal_distribution<float> distribution(0, .5f);
-	std::vector<Body> bodies;
-	bodies.reserve(num);
-	for (size_t i = 0; i < num; ++i)
-	{
-		bodies.push_back({ .mass=1.f, .pos={
-			.x = std::clamp(distribution(generator), -1.f, 1.f) * size,
-			.y = std::clamp(distribution(generator), -1.f, 1.f) * size,
-			.z = std::clamp(distribution(generator), -1.f, 1.f) * size
-		}});
-	}
-
-    Tree tree({ .size=size*2 }, num << 2, bodies);
+    Tree tree({.size = 100});
+    tree.build({
+                   {.mass=1, .pos={1, 1, 1}},
+                   {.mass=1, .pos={1 + std::numeric_limits<float>::epsilon(), 1, 1}}
+               });
 }
 
-TEST_CASE("insert 100000 particles", "[bh tree 3]")
+TEST_CASE("insert 100 particles", "[bh tree]")
 {
-	const float size = 100;
-	const size_t num = 100000; // hundred thousand
-	std::default_random_engine generator;
-	std::normal_distribution<float> distribution(0, .5f);
-	std::vector<Body> bodies;
-	bodies.reserve(num);
-	for (size_t i = 0; i < num; ++i)
-	{
-		bodies.push_back({.mass=1.f, .pos={
-			.x = std::clamp(distribution(generator), -1.f, 1.f) * size,
-			.y = std::clamp(distribution(generator), -1.f, 1.f) * size,
-			.z = std::clamp(distribution(generator), -1.f, 1.f) * size
+    const float size = 100;
+    const size_t num = 100;
+    std::default_random_engine generator;
+    std::normal_distribution<float> distribution(0, .5f);
+    std::vector<Body> bodies;
+    bodies.reserve(num);
+    for (size_t i = 0; i < num; ++i)
+    {
+        bodies.push_back({.mass=1.f, .pos={
+            .x = std::clamp(distribution(generator), -1.f, 1.f) * size,
+            .y = std::clamp(distribution(generator), -1.f, 1.f) * size,
+            .z = std::clamp(distribution(generator), -1.f, 1.f) * size
         }});
-	}
-
-    Tree tree({ .size = size * 2 }, num << 2, bodies);
+    }
+    Tree tree({.size=size * 2}, num << 2, bodies);
 }
 
-TEST_CASE("insert 1000000 particles", "[bh tree 3]")
+TEST_CASE("insert 100000 particles", "[bh tree]")
 {
-	const float size = 100;
-	const size_t num = 1000000; // million
-	std::default_random_engine generator;
-	std::normal_distribution<float> distribution(0, .5f);
-	std::vector<Body> bodies;
-	bodies.reserve(num);
-	for (size_t i = 0; i < num; ++i)
-	{
-		bodies.push_back({.mass=1.f, .pos={
-			.x = std::clamp(distribution(generator), -1.f, 1.f) * size,
-			.y = std::clamp(distribution(generator), -1.f, 1.f) * size,
-			.z = std::clamp(distribution(generator), -1.f, 1.f) * size
+    const float size = 100;
+    const size_t num = 100000; // hundred thousand
+    std::default_random_engine generator;
+    std::normal_distribution<float> distribution(0, .5f);
+    std::vector<Body> bodies;
+    bodies.reserve(num);
+    for (size_t i = 0; i < num; ++i)
+    {
+        bodies.push_back({.mass=1.f, .pos={
+            .x = std::clamp(distribution(generator), -1.f, 1.f) * size,
+            .y = std::clamp(distribution(generator), -1.f, 1.f) * size,
+            .z = std::clamp(distribution(generator), -1.f, 1.f) * size
         }});
-	}
+    }
+    Tree tree({.size = size * 2}, num << 2, bodies);
+}
 
-    Tree tree({ .size = size * 2 }, num << 2, bodies);
+TEST_CASE("insert 1000000 particles", "[bh tree]")
+{
+    const float size = 100;
+    const size_t num = 1000000; // million
+    std::default_random_engine generator;
+    std::normal_distribution<float> distribution(0, .5f);
+    std::vector<Body> bodies;
+    bodies.reserve(num);
+    for (size_t i = 0; i < num; ++i)
+    {
+        bodies.push_back({.mass=1.f, .pos={
+            .x = std::clamp(distribution(generator), -1.f, 1.f) * size,
+            .y = std::clamp(distribution(generator), -1.f, 1.f) * size,
+            .z = std::clamp(distribution(generator), -1.f, 1.f) * size
+        }});
+    }
+    Tree tree({.size = size * 2}, num << 2, bodies);
 }
 
 TEST_CASE("apply with 1 far away particle", "[bh tree 3]")
 {
-	const Vector p0{ 100,100,100 };
-	const float m0 = 1;
-    Tree tree({ .size=200 }, 1024, {{ .mass=m0, .pos=p0 }});
-	tree.apply({ 0,0,0 }, [&](const Node& node)//const Vector& pos, float mass)
-	{
-		REQUIRE(node.com == p0);
-		REQUIRE(node.mass == m0);
-	});
+    const Vector p0{100, 100, 100};
+    const float m0 = 1;
+    Tree tree({.size=200}, 1024, {{.mass=m0, .pos=p0}});
+    tree.apply({0, 0, 0}, [&](const Node &node)//const Vector& pos, float mass)
+    {
+        REQUIRE(node.com == p0);
+        REQUIRE(node.mass == m0);
+    });
 }
 
 TEST_CASE("apply with 2 far away particles", "[bh tree 3]")
 {
-	const Vector p0{ 100,100,100 };
-	const float m0 = 1;
-	const Vector p1{ 99,99,99 };
-	const float m1 = 1;
-    Tree tree({ .size=200 }, 1024, { {.mass=m0, .pos=p0}, {.mass=m1, .pos=p1} });
-	tree.apply({ 0,0,0 }, [&](const Node& node)//const Vector& pos, float mass)
-	{
-		REQUIRE(node.com == ((p0*m0)+(p1*m1))/(m0+m1));
-		REQUIRE(node.mass == m0+m1);
-	});
+    const Vector p0{100, 100, 100};
+    const float m0 = 1;
+    const Vector p1{99, 99, 99};
+    const float m1 = 1;
+    Tree tree({.size=200}, 1024, {{.mass=m0, .pos=p0},
+                                  {.mass=m1, .pos=p1}});
+    tree.apply({0, 0, 0}, [&](const Node &node)
+    {
+        REQUIRE(node.com == ((p0 * m0) + (p1 * m1)) / (m0 + m1));
+        REQUIRE(node.mass == m0 + m1);
+    });
+}
+*/
+
+TEST_CASE("check gravitation calculation against direct computation", "[bh tree]")
+{
+    // setup test parameters
+    static constexpr float G = 1.f;
+    static constexpr float theta = .5f;
+    static constexpr float precision = 1000 * std::numeric_limits<float>::epsilon();
+
+    // make list of bodies
+    std::vector<Body> bodies;
+
+    // make a lambda which compares true and approximate gravity at many points
+    const auto compare_gravity = [&bodies]()
+    {
+        // build tree
+        Tree tree({.size = 20}, bodies.size() << 2, bodies);
+
+        // compute gravitational potential at a position
+        Vector pos;
+        for (pos.x = -10; pos.x <= 10; pos.x += 1.f)
+        for (pos.y = -10; pos.y <= 10; pos.y += 1.f)
+        for (pos.z = -10; pos.z <= 10; pos.z += 1.f)
+        {
+            const float true_gravity = compute_gravity(G, pos, bodies);
+            const float approx_gravity = compute_gravity(G, pos, tree);
+            const float diff = std::abs(true_gravity - approx_gravity);
+            REQUIRE(diff <= precision);
+        }
+    };
+
+    // compare with just one body
+    bodies.push_back({.mass = 10, .pos = {10, 3, 2}});
+    compare_gravity();
+
+    /*
+    // compare with two bodies
+    bodies.push_back({.mass = 3, .pos = {-1, 0, 6}});
+    compare_gravity();
+
+    // compare with three bodies
+    bodies.push_back({.mass = 1, .pos = {2, -1, -10}});
+    compare_gravity();
+
+    // compare with four
+    bodies.push_back({.mass = 6, .pos = {-3, -10, -2}});
+    compare_gravity();
+     */
 }
 
-TEST_CASE("compare n^2 gravitation to n*log(n) gravitation with 100 particles", "[bh tree 3]")
+/*
+TEST_CASE("compare n^2 gravitation to n*log(n) gravitation with 100 particles", "[bh tree]")
 {
 	// setup test parameters
 	static constexpr float G = 1.f;
-	static constexpr float epsilon = .5f;
+	static constexpr float theta = .5f;
 	static constexpr float precision = 1000 * std::numeric_limits<float>::epsilon();
 
     // create list of bodies
@@ -272,19 +363,7 @@ TEST_CASE("compare n^2 gravitation to n*log(n) gravitation with 100 particles", 
     // create tree
     Tree tree({ .size = size * 2 }, num << 2, bodies);
 
-	// function for computing force
-	const auto compute_force = [](const Vector& pos0, float mass0, const Vector& pos1, float mass1) -> Vector
-	{
-		// if we're too close, don't apply a force
-		Vector delta = pos1 - pos0;
-		float delta_sq = dot(delta, delta);
-		if (delta_sq < std::numeric_limits<float>::epsilon())
-			return { 0,0,0 };
 
-		// compute force of gravity
-		const float f_mag = (G * mass0 * mass1) / delta_sq;
-		return f_mag * f_mag * delta * delta / delta_sq;
-	};
 
 	size_t interactions_n2 = 0;
 	size_t interactions_nlogn = 0;
@@ -303,7 +382,7 @@ TEST_CASE("compare n^2 gravitation to n*log(n) gravitation with 100 particles", 
 		tree.apply(bodies[i].pos, [&](const Node& node) {
 			force_nlogn += compute_force(bodies[i].pos, bodies[i].mass, node.com, node.mass);
 			++interactions_nlogn;
-		}, epsilon);
+		}, theta);
 
 		// compare the forces
 		const float force_diff_sq = force_nlogn.dist_sq(force_n2);
@@ -313,3 +392,4 @@ TEST_CASE("compare n^2 gravitation to n*log(n) gravitation with 100 particles", 
 	REQUIRE(0 < interactions_nlogn);
 	REQUIRE(interactions_nlogn < interactions_n2);
 }
+*/

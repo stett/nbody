@@ -1,5 +1,6 @@
 #pragma once
 #include <cmath>
+#include <limits>
 
 namespace nbody
 {
@@ -30,6 +31,14 @@ namespace nbody
         float size() const
         {
             return std::sqrt(size_sq());
+        }
+
+        float size_inv(const float val_if_inf = 0.f) const
+        {
+            const float _size_sq = size_sq();
+            return _size_sq > std::numeric_limits<float>::epsilon()
+                ? 1.f / std::sqrt(_size_sq)
+                : val_if_inf;
         }
 
         float dist_sq(const Vector& other) const
