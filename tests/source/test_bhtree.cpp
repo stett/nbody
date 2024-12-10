@@ -58,7 +58,6 @@ namespace
     }
 }
 
-/*
 TEST_CASE("create tree", "[bh tree]")
 {
     Tree tree({.size=100});
@@ -106,7 +105,6 @@ TEST_CASE("insert 2 particles in different quadrants", "[bh tree]")
     //REQUIRE(tree.nodes()[c1].mass == m1);
     //REQUIRE(compare(tree.nodes()[c1].com, p1));
 }
-*/
 
 /*
 TEST_CASE("insert 2 particles in the same quadrant", "[bh tree 3]")
@@ -184,7 +182,6 @@ TEST_CASE("insert 8 particles in different quadrants", "[bh tree 3]")
 }
 */
 
-/*
 TEST_CASE("insert 2 particles in the same location", "[bh tree]")
 {
     Tree tree({.size = 100});
@@ -286,7 +283,6 @@ TEST_CASE("apply with 2 far away particles", "[bh tree 3]")
         REQUIRE(node.mass == m0 + m1);
     });
 }
-*/
 
 TEST_CASE("check gravitation calculation against direct computation", "[bh tree]")
 {
@@ -319,13 +315,13 @@ TEST_CASE("check gravitation calculation against direct computation", "[bh tree]
 
     // compare with just one body
     bodies.push_back({.mass = 10, .pos = {10, 3, 2}});
-    compare_gravity();
+    //compare_gravity();
 
-    /*
     // compare with two bodies
     bodies.push_back({.mass = 3, .pos = {-1, 0, 6}});
     compare_gravity();
 
+    /*
     // compare with three bodies
     bodies.push_back({.mass = 1, .pos = {2, -1, -10}});
     compare_gravity();
