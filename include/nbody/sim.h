@@ -4,6 +4,7 @@
 #include "BS_thread_pool.hpp"
 #include "body.h"
 #include "bhtree.h"
+#include "gpu.h"
 
 namespace nbody
 {
@@ -13,6 +14,9 @@ namespace nbody
         std::vector<Body> bodies;
         bh::Tree acc_tree;
         BS::thread_pool pool;
+#if NBODY_GPU
+        bool gpu = true;
+#endif
 
         // full update of simulation
         void update(float dt);
