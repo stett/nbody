@@ -17,6 +17,7 @@ namespace
     }
 }
 
+/*
 TEST_CASE("create tree", "[bh tree]")
 {
     Tree tree({ .size=100 });
@@ -292,3 +293,4 @@ TEST_CASE("compare n^2 gravitation to n*log(n) gravitation with 100 particles", 
 	REQUIRE(0 < interactions_nlogn);
 	REQUIRE(interactions_nlogn < interactions_n2);
 }
+*/

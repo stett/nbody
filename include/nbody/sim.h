@@ -15,7 +15,7 @@ namespace nbody
         bh::Tree acc_tree;
         BS::thread_pool pool;
 #if NBODY_GPU
-        bool gpu = true;
+        GPU gpu;
 #endif
 
         // full update of simulation
