@@ -16,6 +16,12 @@ void Sim::update(float dt)
 
 void Sim::integrate(float dt)
 {
+#if NBODY_GPU
+
+    gpu.integrate(bodies, dt);
+
+#else
+
     visit([this, dt](Body& body)
     {
         // semi-implicit euler is pretty good for gravitational forces
@@ -30,6 +36,8 @@ void Sim::integrate(float dt)
                 body.pos[i] += size - std::numeric_limits<float>::epsilon();
         }
     });
+
+#endif
 }
 
 void Sim::accelerate()

@@ -6,8 +6,9 @@
 
 using nbody::GPU;
 
-static const std::string glsl_integrate = R"(
+static const std::string glsl_integrate = R"glsl(
     #version 450
+    layout(local_size_x = 256) in;
 
     struct Body
     {
@@ -18,35 +19,37 @@ static const std::string glsl_integrate = R"(
         vec3 acc;
     };
 
-    layout (binding = 0) uniform UBO
-    {
-        float dt;
-        int num_bodies;
-    } ubo;
-
-    layout(std140, binding = 1) buffer Pos
-    {
-       Body bodies[ ];
+    layout(std430, binding = 0) buffer Bodies {
+        Body bodies[];
     };
 
-    void main()
-    {
-        // get sim info
-        float dt = ubo.dt;
-        int index = int(gl_GlobalInvocationID);
-        vec3 pos = bodies[index].pos;
-        vec3 vel = bodies[index].vel;
-        vec3 acc = bodies[index].acc;
+    layout(push_constant) uniform PushConstants {
+        float dt;
+        int num_bodies;
+    } pc;
+
+    const float G = 6.67430e-11;
+
+    void main() {
+        uint i = gl_GlobalInvocationID.x;
+        if (i >= uint(pc.num_bodies))
+            return;
+
+        vec3 pos = bodies[i].pos;
+        vec3 vel = bodies[i].vel;
+        vec3 acc = bodies[i].acc;
 
         // integrate using semi-implicit euler
-        vel += acc * dt;
-        pos += vel * dt;
+        vel += acc * pc.dt;
+        pos += vel * pc.dt;
 
         // update body info
-        bodies[index].pos = pos;
-        bodies[index].vel = vel;
+        //bodies[i].pos = pos;
+        //bodies[i].vel = vel;
+        bodies[i].pos = vec3(0);
+        bodies[i].vel = vec3(0);
     }
-)";
+)glsl";
 
 GPU::GPU()
     : instance(make_instance())
@@ -60,11 +63,8 @@ GPU::GPU()
     , descriptor_set(make_descriptor_set())
     , pipeline_layout(make_pipeline_layout())
     , shader_integrate(make_shader(glsl_integrate))
-    //, shader_accelerate(make_shader(glsl_integrate))
     , pipeline_integrate(make_pipeline(shader_integrate))
-    //, pipeline_accelerate(make_pipeline(shader_accelerate))
     , buffer_bodies(make_buffer_bodies(0))
-    , buffer_uniforms(make_buffer_uniforms())
 { }
 
 vk::raii::Instance GPU::make_instance()
@@ -116,7 +116,7 @@ vk::raii::Device GPU::make_device()
 
 vk::raii::CommandPool GPU::make_command_pool()
 {
-    return { device, { { }, queue_family_index } };
+    return { device, { vk::CommandPoolCreateFlagBits::eResetCommandBuffer, queue_family_index } };
 }
 
 vk::raii::CommandBuffer GPU::make_command_buffer()
@@ -129,18 +129,16 @@ vk::raii::DescriptorPool GPU::make_descriptor_pool()
 {
     // NOTE: I don't know how to calculate how many of these I actually need...
     std::vector<vk::DescriptorPoolSize> pool_sizes = {
-        vk::DescriptorPoolSize(vk::DescriptorType::eUniformBuffer, 10),
-        vk::DescriptorPoolSize(vk::DescriptorType::eStorageBuffer, 10)
+        vk::DescriptorPoolSize(vk::DescriptorType::eStorageBuffer, 1)
     };
-    return { device, { { vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet }, 10, pool_sizes } };
+    return { device, { { vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet }, 1, pool_sizes } };
 }
 
 vk::raii::DescriptorSetLayout GPU::make_descriptor_set_layout()
 {
     std::vector<vk::DescriptorSetLayoutBinding> bindings =
     {
-        { 0, vk::DescriptorType::eUniformBuffer, 1, vk::ShaderStageFlagBits::eCompute, nullptr },
-        { 1, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eCompute, nullptr },
+        { 0, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eCompute },
     };
 
     return { device, { { }, bindings } };
@@ -154,29 +152,8 @@ vk::raii::DescriptorSet GPU::make_descriptor_set()
 
 vk::raii::PipelineLayout GPU::make_pipeline_layout()
 {
-    return { device, { { }, { *descriptor_set_layout } } };
-}
-
-nbody::Buffer GPU::make_buffer_bodies(uint32_t new_num_bodies)
-{
-    return { physical_device, device, sizeof(Body) * new_num_bodies, vk::BufferUsageFlagBits::eStorageBuffer };
-}
-
-nbody::Buffer GPU::make_buffer_uniforms()
-{
-    return { physical_device, device, sizeof(Uniforms), vk::BufferUsageFlagBits::eUniformBuffer };
-}
-
-void GPU::integrate(std::vector<Body>& bodies, const float dt)
-{
-    {
-        // update uniforms
-        uniforms.dt = dt;
-        uniforms.num_bodies = bodies.size();
-        //vk::DescriptorBufferInfo descriptor_buffer_info(buffer_uniforms, 0, sizeof(Uniforms));
-        //vk::WriteDescriptorSet write_descriptor_set(descriptor_set, 0, 0, vk::DescriptorType::eUniformBuffer, { }, descriptor_buffer_info);
-        //device.updateDescriptorSets(write_descriptor_set, nullptr);
-    }
+    vk::PushConstantRange push_constant_range(vk::ShaderStageFlagBits::eCompute, 0, sizeof(PushConstants));
+    return { device, { { }, { *descriptor_set_layout }, push_constant_range } };
 }
 
 vk::raii::ShaderModule GPU::make_shader(const std::string& glsl)
@@ -188,9 +165,63 @@ vk::raii::ShaderModule GPU::make_shader(const std::string& glsl)
 vk::raii::Pipeline GPU::make_pipeline(vk::raii::ShaderModule& shader)
 {
     // create the pipeline
-    vk::PipelineShaderStageCreateInfo shader_stage_create_info({ }, vk::ShaderStageFlagBits::eCompute, shader, "main");
+    vk::PipelineShaderStageCreateInfo shader_stage_create_info({ }, vk::ShaderStageFlagBits::eCompute, *shader, "main");
     vk::ComputePipelineCreateInfo compute_pipeline_create_info({ }, shader_stage_create_info, *pipeline_layout, { }, -1);
     return { device, nullptr, compute_pipeline_create_info };
+}
+
+nbody::Buffer GPU::make_buffer_bodies(uint32_t new_num_bodies)
+{
+    return {
+        physical_device, device, sizeof(Body) * new_num_bodies,
+        vk::BufferUsageFlagBits::eStorageBuffer |
+        vk::BufferUsageFlagBits::eTransferSrc |
+        vk::BufferUsageFlagBits::eTransferDst };
+}
+
+void GPU::integrate(std::vector<Body>& bodies, const float dt)
+{
+    // update body buffer
+    buffer_bodies.write(bodies.data(), sizeof(Body) * bodies.size());
+    vk::DescriptorBufferInfo descriptor_buffer_info(buffer_bodies.buffer, 0, buffer_bodies.size);
+    vk::WriteDescriptorSet write_descriptor_set(
+            descriptor_set,
+            0, // destination binding
+            0, // starting array element
+            1, // descriptor count
+            vk::DescriptorType::eStorageBuffer,
+            nullptr,
+            &descriptor_buffer_info);
+    device.updateDescriptorSets(write_descriptor_set, { });
+
+    // update push constant values
+    push_constants.dt = dt;
+    push_constants.num_bodies = (int)bodies.size();
+
+    // set up command to run the integrate pipeline
+    command_buffer.begin({ });
+    command_buffer.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline_integrate);
+    command_buffer.bindDescriptorSets(vk::PipelineBindPoint::eCompute, pipeline_layout, 0, { descriptor_set }, { });
+    command_buffer.pushConstants<PushConstants>(pipeline_layout, vk::ShaderStageFlagBits::eCompute, 0, push_constants);
+    const uint32_t group_count = (bodies.size() + 255) / 256;
+    command_buffer.dispatch(group_count, 1, 1);
+    command_buffer.end();
+
+    // submit the command and wait for the result
+    vk::raii::Fence fence(device, vk::FenceCreateInfo{ });
+    vk::raii::Queue queue = device.getQueue(queue_family_index, 0);
+    const vk::SubmitInfo submit_info(
+        0, // wait semaphore count
+        nullptr, // wait semaphores
+        nullptr, // wait destination stage mask flags
+        1, // command buffer count
+        &*command_buffer);
+    queue.submit(submit_info, *fence);
+    const vk::Result result = device.waitForFences({ *fence }, VK_TRUE, UINT64_MAX);
+    assert(result == vk::Result::eSuccess);
+
+    // map the memory back to the bodies array
+    buffer_bodies.read(bodies.data(), buffer_bodies.size);
 }
 
 nbody::Buffer::Buffer(
@@ -202,13 +233,43 @@ nbody::Buffer::Buffer(
     : size(size)
     , usage(usage)
     , properties(properties)
+    , physical_device(physical_device)
     , device(device)
-    , buffer(device, { { }, size, vk::BufferUsageFlagBits::eStorageBuffer })
+    , buffer(nullptr)
     , memory(nullptr)
 {
-    if (size < 1) { return; }
-    GPU::alloc_device_memory(device, physical_device.getMemoryProperties(), buffer.getMemoryRequirements(), properties);
+    allocate(size);
+}
+
+void nbody::Buffer::allocate(const size_t _size)
+{
+    size = _size;
+    if (size == 0) { return; }
+    buffer = { device, { { }, size, usage } };
+    memory = GPU::alloc_device_memory(device, physical_device.getMemoryProperties(), buffer.getMemoryRequirements(), properties);
     buffer.bindMemory(memory, 0);
+}
+
+void nbody::Buffer::write(const void* data, const size_t data_size)
+{
+    // resize, only if growing
+    if (data_size > size)
+    {
+        allocate(data_size);
+    }
+
+    // copy data to gpu mapped memory
+    void* target = memory.mapMemory(0, data_size);
+    memcpy(target, data, data_size);
+    memory.unmapMemory();
+}
+
+void nbody::Buffer::read(void* data, const size_t data_size) const
+{
+    assert(data_size <= size);
+    void* source = memory.mapMemory(0, data_size);
+    std::memcpy(data, source, data_size);
+    memory.unmapMemory();
 }
 
 std::vector<uint32_t> GPU::glsl_to_spv(const std::string& glsl, const std::string& identifier)

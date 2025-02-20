@@ -6,7 +6,7 @@
 
 namespace nbody
 {
-    struct Uniforms
+    struct PushConstants
     {
         float dt;
         int num_bodies;
@@ -17,6 +17,7 @@ namespace nbody
         vk::DeviceSize size;
         vk::BufferUsageFlags usage;
         vk::MemoryPropertyFlags properties;
+        vk::raii::PhysicalDevice& physical_device;
         vk::raii::Device& device;
         vk::raii::Buffer buffer;
         vk::raii::DeviceMemory memory;
@@ -27,6 +28,15 @@ namespace nbody
             vk::DeviceSize size,
             vk::BufferUsageFlags usage,
             vk::MemoryPropertyFlags properties = vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+
+        // allocate gpu memory
+        void allocate(size_t size);
+
+        // copy data to the buffer, potentially resizing
+        void write(const void* data, size_t data_size);
+
+        // copy data from the buffer
+        void read(void* data, size_t data_size) const;
     };
 
     class GPU
@@ -35,7 +45,7 @@ namespace nbody
 
         GPU();
 
-        void integrate(std::vector<Body>& bodies, const float dt);
+        void integrate(std::vector<Body>& bodies, float dt);
 
     private:
 
@@ -52,17 +62,14 @@ namespace nbody
         vk::raii::DescriptorSet descriptor_set;
         vk::raii::PipelineLayout pipeline_layout;
         vk::raii::ShaderModule shader_integrate;
-        //vk::raii::ShaderModule shader_accelerate;
         vk::raii::Pipeline pipeline_integrate;
-        //vk::raii::Pipeline pipeline_accelerate;
         nbody::Buffer buffer_bodies;
-        nbody::Buffer buffer_uniforms;
 
         // cached vk data
         uint32_t queue_family_index;
 
         // runtime data
-        Uniforms uniforms = { 0.f, 0 };
+        PushConstants push_constants = { 0.f, 0 };
 
         // member initializer functions
         vk::raii::Instance make_instance();
@@ -74,12 +81,9 @@ namespace nbody
         vk::raii::DescriptorSetLayout make_descriptor_set_layout();
         vk::raii::DescriptorSet make_descriptor_set();
         vk::raii::PipelineLayout make_pipeline_layout();
-        nbody::Buffer make_buffer_bodies(uint32_t new_num_bodies);
-        nbody::Buffer make_buffer_uniforms();
-
-        // helper functions
         vk::raii::ShaderModule make_shader(const std::string& glsl);
         vk::raii::Pipeline make_pipeline(vk::raii::ShaderModule& shader);
+        nbody::Buffer make_buffer_bodies(uint32_t new_num_bodies);
 
     public:
 
