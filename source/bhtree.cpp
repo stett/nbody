@@ -38,8 +38,10 @@ void Tree::insert(const Vector& position, const float mass)
         {
             const uint32_t child = uint32_t(_nodes.size());
             _nodes[node_index].children = child;
-            for (uint8_t q = 0; q < 7; ++q)
-                _nodes.emplace_back(Node{.bounds = node_bounds.quadrant_bounds(q), .next = child + q + 1});
+            for (uint8_t q = 0; q < 7; ++q) {
+                Node new_node = {.bounds = node_bounds.quadrant_bounds(q), .next = child + q + 1};
+                _nodes.emplace_back(new_node);
+            }
             _nodes.emplace_back(Node{.bounds = node_bounds.quadrant_bounds(7), .next = _nodes[node_index].next});
         }
 

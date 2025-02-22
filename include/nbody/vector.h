@@ -15,7 +15,7 @@ namespace nbody
         float z = 0;
 
 #if NBODY_GPU
-        float __gpu_alignment[1];
+        float __gpu_alignment = 0;
 #endif
 
         float& operator[](const size_t i) {

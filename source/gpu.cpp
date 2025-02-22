@@ -30,30 +30,24 @@ static const std::string glsl_integrate = R"glsl(
         int num_bodies;
     } pc;
 
-    const float G = 6.67430e-11;
+    //const float G = 6.67430e-11;
 
     void main() {
         uint i = gl_GlobalInvocationID.x;
         if (i >= uint(pc.num_bodies))
             return;
 
-        bodies[i].pos = vec4(i);
-
-        /*
-        vec3 pos = bodies[i].pos;
-        vec3 vel = bodies[i].vel;
-        vec3 acc = bodies[i].acc;
+        vec4 pos = bodies[i].pos;
+        vec4 vel = bodies[i].vel;
+        vec4 acc = bodies[i].acc;
 
         // integrate using semi-implicit euler
         vel += acc * pc.dt;
         pos += vel * pc.dt;
 
         // update body info
-        //bodies[i].pos = pos;
-        //bodies[i].vel = vel;
-        bodies[i].pos = vec3(i);
-        bodies[i].vel = vec3(i);
-        */
+        bodies[i].pos = pos;
+        bodies[i].vel = vel;
     }
 )glsl";
 

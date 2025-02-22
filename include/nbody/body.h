@@ -9,7 +9,7 @@ namespace nbody
         float radius = 0;
 
 #if NBODY_GPU
-        float __gpu_alignment[2];
+        float __gpu_alignment[2] = { 0, 0 };
 #endif
 
         Vector pos = { 0,0,0 };
