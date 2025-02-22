@@ -39,9 +39,6 @@ endif()
 # add nbody test suite
 add_subdirectory(tests)
 
-# add temporary gpu test files
-add_subdirectory(test_gpu)
-
 # compile shaders
 #[[
 if (nbody_gpu)
