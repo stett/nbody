@@ -14,9 +14,11 @@ static const std::string glsl_integrate = R"glsl(
     {
         float mass;
         float radius;
-        vec3 pos;
-        vec3 vel;
-        vec3 acc;
+        float __gpu_alignment0;
+        float __gpu_alignment1;
+        vec4 pos;
+        vec4 vel;
+        vec4 acc;
     };
 
     layout(std430, binding = 0) buffer Bodies {
@@ -35,6 +37,9 @@ static const std::string glsl_integrate = R"glsl(
         if (i >= uint(pc.num_bodies))
             return;
 
+        bodies[i].pos = vec4(i);
+
+        /*
         vec3 pos = bodies[i].pos;
         vec3 vel = bodies[i].vel;
         vec3 acc = bodies[i].acc;
@@ -46,8 +51,9 @@ static const std::string glsl_integrate = R"glsl(
         // update body info
         //bodies[i].pos = pos;
         //bodies[i].vel = vel;
-        bodies[i].pos = vec3(0);
-        bodies[i].vel = vec3(0);
+        bodies[i].pos = vec3(i);
+        bodies[i].vel = vec3(i);
+        */
     }
 )glsl";
 

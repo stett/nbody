@@ -27,6 +27,19 @@ TEST_CASE("orbit doesn't decay", "[sim]")
         }
         */
 
+        const float x1 = sim.bodies[1].pos.x;
+        const float y1 = sim.bodies[1].pos.y;
+        const float z1 = sim.bodies[1].pos.z;
+        const float x2 = sim.bodies[2].pos.x;
+        const float y2 = sim.bodies[2].pos.y;
+        const float z2 = sim.bodies[2].pos.z;
+        const float x3 = sim.bodies[3].pos.x;
+        const float y3 = sim.bodies[3].pos.y;
+        const float z3 = sim.bodies[3].pos.z;
+        const float x4 = sim.bodies[4].pos.x;
+        const float y4 = sim.bodies[4].pos.y;
+        const float z4 = sim.bodies[4].pos.z;
+
         sim.update(1.f / 120.f);
     }
 
