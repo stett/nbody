@@ -1,55 +1,15 @@
 #if NBODY_GPU
 #include <iostream>
 #include <string>
+#include <vector>
+#include <array>
 #include "gpu.h"
+#include "shaders.h"
+#include "nbody/constants.h"
 #include "shaderc/shaderc.hpp"
 
 using nbody::GPU;
 
-static const std::string glsl_integrate = R"glsl(
-    #version 450
-    layout(local_size_x = 256) in;
-
-    struct Body
-    {
-        float mass;
-        float radius;
-        float __gpu_alignment0;
-        float __gpu_alignment1;
-        vec4 pos;
-        vec4 vel;
-        vec4 acc;
-    };
-
-    layout(std430, binding = 0) buffer Bodies {
-        Body bodies[];
-    };
-
-    layout(push_constant) uniform PushConstants {
-        float dt;
-        int num_bodies;
-    } pc;
-
-    //const float G = 6.67430e-11;
-
-    void main() {
-        uint i = gl_GlobalInvocationID.x;
-        if (i >= uint(pc.num_bodies))
-            return;
-
-        vec4 pos = bodies[i].pos;
-        vec4 vel = bodies[i].vel;
-        vec4 acc = bodies[i].acc;
-
-        // integrate using semi-implicit euler
-        vel += acc * pc.dt;
-        pos += vel * pc.dt;
-
-        // update body info
-        bodies[i].pos = pos;
-        bodies[i].vel = vel;
-    }
-)glsl";
 
 GPU::GPU()
     : instance(make_instance())
@@ -63,8 +23,11 @@ GPU::GPU()
     , descriptor_set(make_descriptor_set())
     , pipeline_layout(make_pipeline_layout())
     , shader_integrate(make_shader(glsl_integrate))
+    , shader_accelerate(make_shader(glsl_accelerate))
     , pipeline_integrate(make_pipeline(shader_integrate))
+    , pipeline_accelerate(make_pipeline(shader_accelerate))
     , buffer_bodies(make_buffer_bodies(0))
+    , buffer_nodes(make_buffer_nodes(0))
 { }
 
 vk::raii::Instance GPU::make_instance()
@@ -73,11 +36,11 @@ vk::raii::Instance GPU::make_instance()
     vk::ApplicationInfo app_info("nbody", 1, "nbody", 1, VK_API_VERSION_1_4);
 
     // Specify required instance extensions, including the portability enumeration extension.
-    std::vector<const char *> extensions = {"VK_KHR_portability_enumeration"};
+    std::vector<const char *> extensions = { "VK_KHR_portability_enumeration" };
 
     // initialize the instance create info
     vk::InstanceCreateInfo instance_create_info(
-        vk::InstanceCreateFlagBits::eEnumeratePortabilityKHR, // creation flags
+        vk::InstanceCreateFlagBits::eEnumeratePortabilityKHR,
         &app_info,
         {}, // enabled layers
         extensions);
@@ -139,6 +102,7 @@ vk::raii::DescriptorSetLayout GPU::make_descriptor_set_layout()
     std::vector<vk::DescriptorSetLayoutBinding> bindings =
     {
         { 0, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eCompute },
+        { 1, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eCompute },
     };
 
     return { device, { { }, bindings } };
@@ -179,6 +143,15 @@ nbody::Buffer GPU::make_buffer_bodies(uint32_t new_num_bodies)
         vk::BufferUsageFlagBits::eTransferDst };
 }
 
+nbody::Buffer GPU::make_buffer_nodes(uint32_t new_num_nodes)
+{
+    return {
+            physical_device, device, sizeof(bh::Node) * new_num_nodes,
+            vk::BufferUsageFlagBits::eStorageBuffer |
+            vk::BufferUsageFlagBits::eTransferSrc | // do i need both of these?
+            vk::BufferUsageFlagBits::eTransferDst };
+}
+
 void GPU::integrate(std::vector<Body>& bodies, const float dt)
 {
     // update body buffer
@@ -195,12 +168,77 @@ void GPU::integrate(std::vector<Body>& bodies, const float dt)
     device.updateDescriptorSets(write_descriptor_set, { });
 
     // update push constant values
-    push_constants.dt = dt;
-    push_constants.num_bodies = (int)bodies.size();
+    PushConstants push_constants = { .dt = dt, .num_bodies = (int)bodies.size() };
 
     // set up command to run the integrate pipeline
     command_buffer.begin({ });
     command_buffer.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline_integrate);
+    command_buffer.bindDescriptorSets(vk::PipelineBindPoint::eCompute, pipeline_layout, 0, { descriptor_set }, { });
+    command_buffer.pushConstants<PushConstants>(pipeline_layout, vk::ShaderStageFlagBits::eCompute, 0, push_constants);
+    const uint32_t group_count = (bodies.size() + 255) / 256;
+    command_buffer.dispatch(group_count, 1, 1);
+    command_buffer.end();
+
+    // submit the command and wait for the result
+    vk::raii::Fence fence(device, vk::FenceCreateInfo{ });
+    vk::raii::Queue queue = device.getQueue(queue_family_index, 0);
+    const vk::SubmitInfo submit_info(
+        0, // wait semaphore count
+        nullptr, // wait semaphores
+        nullptr, // wait destination stage mask flags
+        1, // command buffer count
+        &*command_buffer);
+    queue.submit(submit_info, *fence);
+    const vk::Result result = device.waitForFences({ *fence }, VK_TRUE, UINT64_MAX);
+    assert(result == vk::Result::eSuccess);
+
+    // map the memory back to the bodies array
+    buffer_bodies.read(bodies.data(), buffer_bodies.size);
+}
+
+void GPU::accelerate(std::vector<Body>& bodies, const std::vector<bh::Node>& nodes, const float theta, const Mode mode)
+{
+    // update buffers
+    buffer_bodies.write(bodies.data(), sizeof(Body) * bodies.size());
+    buffer_nodes.write(nodes.data(), sizeof(bh::Node) * nodes.size());
+    vk::DescriptorBufferInfo descriptor_buffer_info_bodies = { buffer_bodies.buffer, 0, buffer_bodies.size };
+    vk::DescriptorBufferInfo descriptor_buffer_info_nodes = { buffer_nodes.buffer, 0, buffer_nodes.size };
+    std::array<vk::WriteDescriptorSet, 2> descriptor_set_writes
+    {
+        vk::WriteDescriptorSet{
+            *descriptor_set,
+            0, // destination binding
+            0, // starting array element
+            1, // descriptor count
+            vk::DescriptorType::eStorageBuffer,
+            nullptr,
+            &descriptor_buffer_info_bodies
+        },
+
+        vk::WriteDescriptorSet{
+            *descriptor_set,
+            1, // destination binding
+            0, // starting array element
+            1, // descriptor count
+            vk::DescriptorType::eStorageBuffer,
+            nullptr,
+            &descriptor_buffer_info_nodes
+        }
+    };
+    device.updateDescriptorSets(descriptor_set_writes, { });
+
+    // update push constant values
+    PushConstants push_constants = {
+        .theta = theta,
+        .G = nbody::G,
+        .num_bodies = (int)bodies.size(),
+        .num_nodes = (int)nodes.size(),
+        .mode = mode,
+    };
+
+    // set up command to run the accelerate pipeline
+    command_buffer.begin({ });
+    command_buffer.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline_accelerate);
     command_buffer.bindDescriptorSets(vk::PipelineBindPoint::eCompute, pipeline_layout, 0, { descriptor_set }, { });
     command_buffer.pushConstants<PushConstants>(pipeline_layout, vk::ShaderStageFlagBits::eCompute, 0, push_constants);
     const uint32_t group_count = (bodies.size() + 255) / 256;

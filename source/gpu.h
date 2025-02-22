@@ -3,13 +3,19 @@
 #include <vector>
 #include "vulkan/vulkan_raii.hpp"
 #include "nbody/body.h"
+#include "nbody/bhtree.h"
 
 namespace nbody
 {
+    enum class Mode : int { N2 = 0, NLogN = 1 };
+
     struct PushConstants
     {
-        float dt;
+        union { float dt; float theta; };
+        float G;
         int num_bodies;
+        int num_nodes;
+        Mode mode;
     };
 
     struct Buffer
@@ -46,6 +52,7 @@ namespace nbody
         GPU();
 
         void integrate(std::vector<Body>& bodies, float dt);
+        void accelerate(std::vector<Body>& bodies, const std::vector<bh::Node>& nodes, float theta, Mode mode);
 
     private:
 
@@ -62,14 +69,14 @@ namespace nbody
         vk::raii::DescriptorSet descriptor_set;
         vk::raii::PipelineLayout pipeline_layout;
         vk::raii::ShaderModule shader_integrate;
+        vk::raii::ShaderModule shader_accelerate;
         vk::raii::Pipeline pipeline_integrate;
+        vk::raii::Pipeline pipeline_accelerate;
         nbody::Buffer buffer_bodies;
+        nbody::Buffer buffer_nodes;
 
         // cached vk data
         uint32_t queue_family_index;
-
-        // runtime data
-        PushConstants push_constants = { 0.f, 0 };
 
         // member initializer functions
         vk::raii::Instance make_instance();
@@ -84,6 +91,7 @@ namespace nbody
         vk::raii::ShaderModule make_shader(const std::string& glsl);
         vk::raii::Pipeline make_pipeline(vk::raii::ShaderModule& shader);
         nbody::Buffer make_buffer_bodies(uint32_t new_num_bodies);
+        nbody::Buffer make_buffer_nodes(uint32_t new_num_nodes);
 
     public:
 

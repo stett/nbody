@@ -9,8 +9,8 @@ namespace nbody
 {
     struct Bounds
     {
-        float size;
         Vector center;
+        float size;
 
         [[nodiscard]]
         Vector min() const
@@ -41,12 +41,12 @@ namespace nbody
             const float half = size * .5f;
             const float quart = size * .25f;
             return {
-                .size = half,
                 .center = {
                     .x = ((q & (1 << 0)) != 0) ? (center.x - quart) : (center.x + quart),
                     .y = ((q & (1 << 1)) != 0) ? (center.y - quart) : (center.y + quart),
                     .z = ((q & (1 << 2)) != 0) ? (center.z - quart) : (center.z + quart),
-                }
+                },
+                .size = half
             };
         }
 

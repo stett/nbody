@@ -6,6 +6,9 @@
 #include "nbody/sim.h"
 #include "nbody/constants.h"
 
+// TEMP
+#include <iostream>
+
 using nbody::Sim;
 
 void Sim::update(float dt)
@@ -17,10 +20,12 @@ void Sim::update(float dt)
 void Sim::integrate(float dt)
 {
 #if NBODY_GPU
-
-    gpu.integrate(bodies, dt);
-
-#else
+    if (use_gpu)
+    {
+        gpu.integrate(bodies, dt);
+        return;
+    }
+#endif
 
     visit([this, dt](Body& body)
     {
@@ -36,8 +41,6 @@ void Sim::integrate(float dt)
                 body.pos[i] += size - std::numeric_limits<float>::epsilon();
         }
     });
-
-#endif
 }
 
 void Sim::accelerate()
@@ -47,6 +50,14 @@ void Sim::accelerate()
     acc_tree.reserve(bodies.size() << 2);
     for (Body& body : bodies)
         acc_tree.insert(body.pos, body.mass);
+
+#if NBODY_GPU
+    if (use_gpu)
+    {
+        gpu.accelerate(bodies, acc_tree.nodes(), .5f, Mode::NLogN);
+        return;
+    }
+#endif
 
     // accelerate all bodies
     visit([this](Body& body)

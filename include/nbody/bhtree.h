@@ -13,10 +13,12 @@ namespace nbody
         struct Node
         {
             Bounds bounds;
+            Vector com;
+            float mass = 0;
             uint32_t next = 0; // index of the next node at this level, or the parent's next
             uint32_t children = 0; // index of the first child
-            float mass = 0;
-            Vector com;
+            uint32_t __pad0 = 0;
+            uint32_t __pad1 = 0;
         };
 
         class Tree
@@ -24,7 +26,7 @@ namespace nbody
         public:
 
             // initialize tree with bounds and a root node
-            Tree(const Bounds& bounds = { 1 }) : _nodes{ {.bounds = bounds, .children = 0, .mass = 0, .com = {0, 0, 0}} } { }
+            explicit Tree(const Bounds& bounds = { .size=1 }) : _nodes{ {.bounds = bounds, .children = 0, .mass = 0, .com = {0, 0, 0}} } { }
 
             // reserve space for at least this many nodes
             void reserve(const size_t max_nodes) { _nodes.reserve(max_nodes); }
