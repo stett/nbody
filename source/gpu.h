@@ -95,7 +95,12 @@ namespace nbody
         vk::raii::DescriptorSetLayout make_descriptor_set_layout();
         vk::raii::DescriptorSet make_descriptor_set();
         vk::raii::PipelineLayout make_pipeline_layout();
-        vk::raii::ShaderModule make_shader(const std::string& glsl);
+        vk::raii::ShaderModule make_shader(const unsigned char* spv, size_t size);
+
+        template <size_t size>
+        vk::raii::ShaderModule make_shader(const unsigned char (&spv)[size])
+        { return std::move(make_shader(spv, size)); }
+
         vk::raii::Pipeline make_pipeline(vk::raii::ShaderModule& shader);
 
         template <typename Type>
@@ -108,8 +113,6 @@ namespace nbody
         { return { physical_device, device, sizeof(Type) * num, flags }; }
 
     public:
-
-        static std::vector<uint32_t> glsl_to_spv(const std::string& glsl, const std::string& identifier = "unidentified");
 
         static uint32_t find_memory_type(vk::PhysicalDeviceMemoryProperties const& memoryProperties, uint32_t typeBits, vk::MemoryPropertyFlags requirementsMask);
 

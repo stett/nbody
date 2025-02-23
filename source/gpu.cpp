@@ -4,8 +4,8 @@
 #include <vector>
 #include <array>
 #include "gpu.h"
-#include "shaders.h"
-#include "shaderc/shaderc.hpp"
+#include "shaders/accelerate.h"
+#include "shaders/integrate.h"
 
 using nbody::GPU;
 
@@ -21,8 +21,8 @@ GPU::GPU()
     , descriptor_set_layout(make_descriptor_set_layout())
     , descriptor_set(make_descriptor_set())
     , pipeline_layout(make_pipeline_layout())
-    , shader_integrate(make_shader(glsl_integrate))
-    , shader_accelerate(make_shader(glsl_accelerate))
+    , shader_integrate(make_shader(spv_integrate))
+    , shader_accelerate(make_shader(spv_accelerate))
     , pipeline_integrate(make_pipeline(shader_integrate))
     , pipeline_accelerate(make_pipeline(shader_accelerate))
     , buffer_bodies(make_buffer<Body>(0))
@@ -119,10 +119,9 @@ vk::raii::PipelineLayout GPU::make_pipeline_layout()
     return { device, { { }, { *descriptor_set_layout }, push_constant_range } };
 }
 
-vk::raii::ShaderModule GPU::make_shader(const std::string& glsl)
+vk::raii::ShaderModule GPU::make_shader(const unsigned char* spv, size_t size)
 {
-    const std::vector<uint32_t> spv = glsl_to_spv(glsl);
-    return { device, { vk::ShaderModuleCreateFlags(), spv } };
+    return { device, { { }, size, reinterpret_cast<const uint32_t*>(spv) } };
 }
 
 vk::raii::Pipeline GPU::make_pipeline(vk::raii::ShaderModule& shader)
@@ -281,35 +280,6 @@ void nbody::Buffer::read(void* data, const size_t data_size) const
     void* source = memory.mapMemory(0, data_size);
     std::memcpy(data, source, data_size);
     memory.unmapMemory();
-}
-
-std::vector<uint32_t> GPU::glsl_to_spv(const std::string& glsl, const std::string& identifier)
-{
-    // create a shaderc compiler instance & options object
-    shaderc::Compiler compiler;
-    shaderc::CompileOptions options; // todo: set optimization level?
-    options.SetTargetEnvironment(shaderc_target_env_vulkan, shaderc_env_version_vulkan_1_4);
-    options.SetGenerateDebugInfo();
-    options.SetOptimizationLevel(shaderc_optimization_level_zero);
-
-    // compile the glsl
-    shaderc::SpvCompilationResult result = compiler.CompileGlslToSpv(
-        glsl,
-        shaderc_shader_kind::shaderc_glsl_compute_shader,
-        identifier.c_str(),
-        options
-    );
-
-    // Check for compilation errors.
-    if (result.GetCompilationStatus() != shaderc_compilation_status_success)
-    {
-        std::cerr << "Shader compilation error: " << result.GetErrorMessage() << std::endl;
-        assert(false);
-        return { };
-    }
-
-    // Get the SPIR-V code as a vector of uint32_t.
-    return { result.cbegin(), result.cend() };
 }
 
 uint32_t GPU::find_memory_type(
