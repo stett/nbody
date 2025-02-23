@@ -26,6 +26,15 @@ static const std::string glsl_common = R"glsl(
         uint __pad1;
     };
 
+    layout(push_constant) uniform PushConstants {
+        float dt;
+        float theta;
+        float G;
+        int num_bodies;
+        int num_nodes;
+        int mode;
+    } pc;
+
     const int N2 = 0;
     const int NLogN = 1;
 )glsl";
@@ -35,14 +44,6 @@ static const std::string glsl_integrate = glsl_common + R"glsl(
     layout(std430, binding = 0) buffer Bodies {
         Body bodies[];
     };
-
-    layout(push_constant) uniform PushConstants {
-        float dt;
-        float G;
-        int num_bodies;
-        int num_nodes;
-        int mode;
-    } pc;
 
     void main() {
         uint i = gl_GlobalInvocationID.x;
@@ -73,14 +74,6 @@ static const std::string glsl_accelerate = glsl_common + R"glsl(
     layout(std430, binding = 1) buffer Nodes {
         Node nodes[];
     };
-
-    layout(push_constant) uniform PushConstants {
-        float theta;
-        float G;
-        int num_bodies;
-        int num_nodes;
-        int mode;
-    } pc;
 
     vec3 accelerate(vec3 body_pos, float body_radius, vec3 node_pos, float node_mass)
     {

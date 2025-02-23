@@ -5,7 +5,6 @@
 #include <array>
 #include "gpu.h"
 #include "shaders.h"
-#include "nbody/constants.h"
 #include "shaderc/shaderc.hpp"
 
 using nbody::GPU;
@@ -26,8 +25,8 @@ GPU::GPU()
     , shader_accelerate(make_shader(glsl_accelerate))
     , pipeline_integrate(make_pipeline(shader_integrate))
     , pipeline_accelerate(make_pipeline(shader_accelerate))
-    , buffer_bodies(make_buffer_bodies(0))
-    , buffer_nodes(make_buffer_nodes(0))
+    , buffer_bodies(make_buffer<Body>(0))
+    , buffer_nodes(make_buffer<bh::Node>(0))
 { }
 
 vk::raii::Instance GPU::make_instance()
@@ -134,73 +133,13 @@ vk::raii::Pipeline GPU::make_pipeline(vk::raii::ShaderModule& shader)
     return { device, nullptr, compute_pipeline_create_info };
 }
 
-nbody::Buffer GPU::make_buffer_bodies(uint32_t new_num_bodies)
-{
-    return {
-        physical_device, device, sizeof(Body) * new_num_bodies,
-        vk::BufferUsageFlagBits::eStorageBuffer |
-        vk::BufferUsageFlagBits::eTransferSrc |
-        vk::BufferUsageFlagBits::eTransferDst };
-}
-
-nbody::Buffer GPU::make_buffer_nodes(uint32_t new_num_nodes)
-{
-    return {
-            physical_device, device, sizeof(bh::Node) * new_num_nodes,
-            vk::BufferUsageFlagBits::eStorageBuffer |
-            vk::BufferUsageFlagBits::eTransferSrc | // do i need both of these?
-            vk::BufferUsageFlagBits::eTransferDst };
-}
-
-void GPU::integrate(std::vector<Body>& bodies, const float dt)
-{
-    // update body buffer
-    buffer_bodies.write(bodies.data(), sizeof(Body) * bodies.size());
-    vk::DescriptorBufferInfo descriptor_buffer_info(buffer_bodies.buffer, 0, buffer_bodies.size);
-    vk::WriteDescriptorSet write_descriptor_set(
-            descriptor_set,
-            0, // destination binding
-            0, // starting array element
-            1, // descriptor count
-            vk::DescriptorType::eStorageBuffer,
-            nullptr,
-            &descriptor_buffer_info);
-    device.updateDescriptorSets(write_descriptor_set, { });
-
-    // update push constant values
-    PushConstants push_constants = { .dt = dt, .num_bodies = (int)bodies.size() };
-
-    // set up command to run the integrate pipeline
-    command_buffer.begin({ });
-    command_buffer.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline_integrate);
-    command_buffer.bindDescriptorSets(vk::PipelineBindPoint::eCompute, pipeline_layout, 0, { descriptor_set }, { });
-    command_buffer.pushConstants<PushConstants>(pipeline_layout, vk::ShaderStageFlagBits::eCompute, 0, push_constants);
-    const uint32_t group_count = (bodies.size() + 255) / 256;
-    command_buffer.dispatch(group_count, 1, 1);
-    command_buffer.end();
-
-    // submit the command and wait for the result
-    vk::raii::Fence fence(device, vk::FenceCreateInfo{ });
-    vk::raii::Queue queue = device.getQueue(queue_family_index, 0);
-    const vk::SubmitInfo submit_info(
-        0, // wait semaphore count
-        nullptr, // wait semaphores
-        nullptr, // wait destination stage mask flags
-        1, // command buffer count
-        &*command_buffer);
-    queue.submit(submit_info, *fence);
-    const vk::Result result = device.waitForFences({ *fence }, VK_TRUE, UINT64_MAX);
-    assert(result == vk::Result::eSuccess);
-
-    // map the memory back to the bodies array
-    buffer_bodies.read(bodies.data(), buffer_bodies.size);
-}
-
-void GPU::accelerate(std::vector<Body>& bodies, const std::vector<bh::Node>& nodes, const float theta, const Mode mode)
+void GPU::write(const std::vector<Body>& bodies, const std::vector<bh::Node>& nodes)
 {
     // update buffers
     buffer_bodies.write(bodies.data(), sizeof(Body) * bodies.size());
     buffer_nodes.write(nodes.data(), sizeof(bh::Node) * nodes.size());
+
+    // update descriptor sets
     vk::DescriptorBufferInfo descriptor_buffer_info_bodies = { buffer_bodies.buffer, 0, buffer_bodies.size };
     vk::DescriptorBufferInfo descriptor_buffer_info_nodes = { buffer_nodes.buffer, 0, buffer_nodes.size };
     std::array<vk::WriteDescriptorSet, 2> descriptor_set_writes
@@ -228,20 +167,28 @@ void GPU::accelerate(std::vector<Body>& bodies, const std::vector<bh::Node>& nod
     device.updateDescriptorSets(descriptor_set_writes, { });
 
     // update push constant values
-    PushConstants push_constants = {
-        .theta = theta,
-        .G = nbody::G,
-        .num_bodies = (int)bodies.size(),
-        .num_nodes = (int)nodes.size(),
-        .mode = mode,
-    };
+    push_constants.num_bodies = (int)bodies.size();
+    push_constants.num_nodes = (int)nodes.size();
+}
 
-    // set up command to run the accelerate pipeline
+void GPU::read(std::vector<Body>& bodies)
+{
+    // map the memory back to the bodies array
+    assert(bodies.size() * sizeof(Body) >= buffer_bodies.size);
+    buffer_bodies.read(bodies.data(), buffer_bodies.size);
+}
+
+void GPU::integrate(const float dt)
+{
+    // update relevant push constants
+    push_constants.dt = dt;
+
+    // set up command to run the integrate pipeline
     command_buffer.begin({ });
-    command_buffer.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline_accelerate);
+    command_buffer.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline_integrate);
     command_buffer.bindDescriptorSets(vk::PipelineBindPoint::eCompute, pipeline_layout, 0, { descriptor_set }, { });
     command_buffer.pushConstants<PushConstants>(pipeline_layout, vk::ShaderStageFlagBits::eCompute, 0, push_constants);
-    const uint32_t group_count = (bodies.size() + 255) / 256;
+    const uint32_t group_count = (push_constants.num_bodies + 255) / 256;
     command_buffer.dispatch(group_count, 1, 1);
     command_buffer.end();
 
@@ -257,9 +204,35 @@ void GPU::accelerate(std::vector<Body>& bodies, const std::vector<bh::Node>& nod
     queue.submit(submit_info, *fence);
     const vk::Result result = device.waitForFences({ *fence }, VK_TRUE, UINT64_MAX);
     assert(result == vk::Result::eSuccess);
+}
 
-    // map the memory back to the bodies array
-    buffer_bodies.read(bodies.data(), buffer_bodies.size);
+void GPU::accelerate(float theta, Mode mode)
+{
+    // update relevant push constants
+    push_constants.theta = theta;
+    push_constants.mode = mode;
+
+    // set up command to run the accelerate pipeline
+    command_buffer.begin({ });
+    command_buffer.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline_accelerate);
+    command_buffer.bindDescriptorSets(vk::PipelineBindPoint::eCompute, pipeline_layout, 0, { descriptor_set }, { });
+    command_buffer.pushConstants<PushConstants>(pipeline_layout, vk::ShaderStageFlagBits::eCompute, 0, push_constants);
+    const uint32_t group_count = (push_constants.num_bodies + 255) / 256;
+    command_buffer.dispatch(group_count, 1, 1);
+    command_buffer.end();
+
+    // submit the command and wait for the result
+    vk::raii::Fence fence(device, vk::FenceCreateInfo{ });
+    vk::raii::Queue queue = device.getQueue(queue_family_index, 0);
+    const vk::SubmitInfo submit_info(
+        0, // wait semaphore count
+        nullptr, // wait semaphores
+        nullptr, // wait destination stage mask flags
+        1, // command buffer count
+        &*command_buffer);
+    queue.submit(submit_info, *fence);
+    const vk::Result result = device.waitForFences({ *fence }, VK_TRUE, UINT64_MAX);
+    assert(result == vk::Result::eSuccess);
 }
 
 nbody::Buffer::Buffer(

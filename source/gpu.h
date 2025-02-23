@@ -4,6 +4,7 @@
 #include "vulkan/vulkan_raii.hpp"
 #include "nbody/body.h"
 #include "nbody/bhtree.h"
+#include "nbody/constants.h"
 
 namespace nbody
 {
@@ -11,11 +12,12 @@ namespace nbody
 
     struct PushConstants
     {
-        union { float dt; float theta; };
-        float G;
-        int num_bodies;
-        int num_nodes;
-        Mode mode;
+        float dt = 0;
+        float theta = 0;
+        float G = nbody::G;
+        int num_bodies = 0;
+        int num_nodes = 0;
+        Mode mode = Mode::NLogN;
     };
 
     struct Buffer
@@ -51,8 +53,10 @@ namespace nbody
 
         GPU();
 
-        void integrate(std::vector<Body>& bodies, float dt);
-        void accelerate(std::vector<Body>& bodies, const std::vector<bh::Node>& nodes, float theta, Mode mode);
+        void write(const std::vector<Body>& bodies, const std::vector<bh::Node>& nodes);
+        void read(std::vector<Body>& bodies);
+        void integrate(float dt);
+        void accelerate(float theta, Mode mode);
 
     private:
 
@@ -78,6 +82,9 @@ namespace nbody
         // cached vk data
         uint32_t queue_family_index;
 
+        // constant values for shaders
+        PushConstants push_constants;
+
         // member initializer functions
         vk::raii::Instance make_instance();
         vk::raii::PhysicalDevice make_physical_device();
@@ -90,8 +97,15 @@ namespace nbody
         vk::raii::PipelineLayout make_pipeline_layout();
         vk::raii::ShaderModule make_shader(const std::string& glsl);
         vk::raii::Pipeline make_pipeline(vk::raii::ShaderModule& shader);
-        nbody::Buffer make_buffer_bodies(uint32_t new_num_bodies);
-        nbody::Buffer make_buffer_nodes(uint32_t new_num_nodes);
+
+        template <typename Type>
+        nbody::Buffer make_buffer(
+            uint32_t num,
+            vk::BufferUsageFlags flags =
+                vk::BufferUsageFlagBits::eStorageBuffer |
+                vk::BufferUsageFlagBits::eTransferSrc |
+                vk::BufferUsageFlagBits::eTransferDst)
+        { return { physical_device, device, sizeof(Type) * num, flags }; }
 
     public:
 

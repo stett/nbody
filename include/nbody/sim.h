@@ -22,11 +22,11 @@ namespace nbody
         // full update of simulation
         void update(float dt);
 
-        // integration of acceleration and velocity
-        void integrate(float dt);
-
         // update of acceleration
         void accelerate();
+
+        // integration of acceleration and velocity
+        void integrate(float dt);
 
         // apply a function to every body in parallel
         void visit(const std::function<void(Body& body)>& func);
