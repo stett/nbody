@@ -14,7 +14,7 @@ target_link_libraries(nbody PUBLIC BS_thread_pool)
 target_compile_features(nbody PRIVATE cxx_std_20)
 if (MSVC)
     set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /MT")
-    set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} /MTd")
+    set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} /MTd /ZI")
 endif()
 
 # add nbody test suite
