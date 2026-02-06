@@ -16,7 +16,7 @@ void nbody::util::disk(
     DiskArgs args)
 {
     // temp tree for velocity calculation
-    bh::Tree tree({.size=2.f * args.outer_radius, .center={ args.center.x, args.center.y, args.center.z }});
+    bh::Tree tree({.center={ args.center.x, args.center.y, args.center.z }, .size=2.f * args.outer_radius});
 
     // make sure we have space in the bodies array
     const size_t num = end - begin;
@@ -25,7 +25,7 @@ void nbody::util::disk(
     // create the central gravitational body
     const float center_radius = compute_radius(args.central_mass, star_density);
     auto body = begin;
-    *(body++) = Body{ .mass=args.central_mass, .radius=center_radius, .pos=args.center };
+    *(body++) = Body{ .pos=args.center, .radius=center_radius, .mass=args.central_mass };
     tree.insert({ args.center.x, args.center.y, args.center.z }, args.central_mass);
 
     // make sure none of the stars are spawned inside the center
@@ -68,7 +68,7 @@ void nbody::util::disk(
         const float star_radius = compute_radius(args.star_mass, star_density);
 
         // add the star to the array
-        *(body++) = { .mass=args.star_mass, .radius=star_radius, .pos=star_pos, .vel=star_lin_vel };
+        *(body++) = { .pos=star_pos, .radius=star_radius, .vel=star_lin_vel, .mass=args.star_mass };
 
         // add the star to the temporary tree
         tree.insert({ star_pos.x, star_pos.y, star_pos.z }, args.star_mass);
@@ -115,6 +115,6 @@ void nbody::util::cube(
             uniform_distribution(generator)
         };
         const float star_radius = compute_radius(args.star_mass, star_density);
-        *(body++) = { .mass=args.star_mass, .radius=star_radius, .pos=star_pos, .vel=args.vel };
+        *(body++) = {.pos=star_pos, .radius=star_radius, .vel=args.vel, .mass=args.star_mass };
     }
 }
