@@ -6,30 +6,15 @@
 #include "nbody/sim.h"
 #include "nbody/constants.h"
 
+// TEMP
+#include <iostream>
+
 using nbody::Sim;
 
 void Sim::update(float dt)
 {
     accelerate();
     integrate(dt);
-}
-
-void Sim::integrate(float dt)
-{
-    visit([this, dt](Body& body)
-    {
-        // semi-implicit euler is pretty good for gravitational forces
-        body.vel += body.acc * dt;
-        body.pos += body.vel * dt;
-
-        // wrap space into a 4d taurus
-        for (size_t i = 0; i < 3; ++i) {
-            while (body.pos[i] > size*.5)
-                body.pos[i] -= size - std::numeric_limits<float>::epsilon();
-            while (body.pos[i] < -size*.5)
-                body.pos[i] += size - std::numeric_limits<float>::epsilon();
-        }
-    });
 }
 
 void Sim::accelerate()
@@ -39,6 +24,15 @@ void Sim::accelerate()
     acc_tree.reserve(bodies.size() << 2);
     for (Body& body : bodies)
         acc_tree.insert(body.pos, body.mass);
+
+#if NBODY_GPU
+    if (use_gpu)
+    {
+        gpu.write(bodies, acc_tree.nodes());
+        gpu.accelerate(.5f, Mode::NLogN);
+        return;
+    }
+#endif
 
     // accelerate all bodies
     visit([this](Body& body)
@@ -59,6 +53,33 @@ void Sim::accelerate()
             body.acc += G * node.mass * delta / (std::sqrt(delta_sq) * delta_sq);
         });
     });
+}
+
+void Sim::integrate(float dt)
+{
+#if NBODY_GPU
+    if (use_gpu)
+    {
+        gpu.integrate(dt);
+        gpu.read(bodies);
+        return;
+    }
+#endif
+
+    visit([this, dt](Body& body)
+          {
+              // semi-implicit euler is pretty good for gravitational forces
+              body.vel += body.acc * dt;
+              body.pos += body.vel * dt;
+
+              // wrap space into a 4d taurus
+              for (size_t i = 0; i < 3; ++i) {
+                  while (body.pos[i] > size*.5)
+                      body.pos[i] -= size - std::numeric_limits<float>::epsilon();
+                  while (body.pos[i] < -size*.5)
+                      body.pos[i] += size - std::numeric_limits<float>::epsilon();
+              }
+          });
 }
 
 void Sim::visit(const std::function<void(Body& body)>& func)

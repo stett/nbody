@@ -25,7 +25,7 @@ void nbody::util::disk(
     // create the central gravitational body
     const float center_radius = compute_radius(args.central_mass, star_density);
     auto body = begin;
-    *(body++) = Body{ .mass=args.central_mass, .radius=center_radius, .pos=args.center, .vel=args.vel };
+    *(body++) = Body{ .mass=args.central_mass, .radius=center_radius, .pos=args.center };
     tree.insert({ args.center.x, args.center.y, args.center.z }, args.central_mass);
 
     // make sure none of the stars are spawned inside the center
@@ -58,12 +58,19 @@ void nbody::util::disk(
         // displacement from plane along axis
         const float disp = ((args.outer_radius - dist) / args.outer_radius) * (args.thickness * center_radius) * gaussian_distribution(generator);
 
+        // star velocity, just used for directionality
         const Vector star_coord0 = ((std::sin(angle) * coord0) + (std::cos(angle) * coord1)).norm();
         const Vector star_coord1 = (cross(args.axis, star_coord0)).norm();
         const Vector star_pos = args.center + (star_coord0 * dist) + (args.axis * disp);
         const Vector star_lin_vel = star_coord1;
+
+        // given the mass and density, find the radius
         const float star_radius = compute_radius(args.star_mass, star_density);
+
+        // add the star to the array
         *(body++) = { .mass=args.star_mass, .radius=star_radius, .pos=star_pos, .vel=star_lin_vel };
+
+        // add the star to the temporary tree
         tree.insert({ star_pos.x, star_pos.y, star_pos.z }, args.star_mass);
     }
 
@@ -82,22 +89,32 @@ void nbody::util::disk(
         const float speed = std::sqrt(G * mass / dist);
         body->vel = args.vel + (body->vel * speed);
     }
+}
 
-    /*
-    // sort bodies by distance to sun
-    //std::sort(bodies_begin, bodies.end(), [&center](Body& a, Body&b) { return (a.pos - center).size_sq() < (b.pos - center).size_sq(); });
-    std::sort(begin, end, [&center](Body& a, Body&b) { return (a.pos - center).size_sq() < (b.pos - center).size_sq(); });
+void nbody::util::cube(
+    std::vector<Body>::iterator begin,
+    std::vector<Body>::iterator end,
+    CubeArgs args)
+{
+    // make sure we have space in the bodies array
+    const size_t num = end - begin;
+    if (num == 0) { return; }
+    auto body = begin;
 
-    // adjust velocities of each body so that they are
-    float mass = 0;
-    for (body = begin; body != end; ++body)
+    // create the random number generator
+    std::default_random_engine generator;
+    std::uniform_real_distribution<float> uniform_distribution(-.5 * args.size, .5 * args.size);
+
+    // add the stars
+    for (size_t i = 0; i < num; ++i)
     {
-        mass += body->mass;
-        const float dist_sq = (body->pos - center).size_sq();
-        if (dist_sq < std::numeric_limits<float>::epsilon())
-            continue;
-        const float speed = sqrt(G * mass / sqrt(dist_sq));
-        body->vel = vel + (body->vel * speed);
+        const Vector star_pos =
+        {
+            uniform_distribution(generator),
+            uniform_distribution(generator),
+            uniform_distribution(generator)
+        };
+        const float star_radius = compute_radius(args.star_mass, star_density);
+        *(body++) = { .mass=args.star_mass, .radius=star_radius, .pos=star_pos, .vel=args.vel };
     }
-     */
 }

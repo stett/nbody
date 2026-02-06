@@ -27,5 +27,18 @@ namespace nbody
             std::vector<Body>::iterator begin,
             std::vector<Body>::iterator end,
             DiskArgs args = DiskArgs());
+
+        struct CubeArgs
+        {
+            const Vector center = {0,0,0};
+            const float size = 500;
+            const Vector vel = {0,0,0};
+            float star_mass = solar_mass;
+        };
+
+        void cube(
+            std::vector<Body>::iterator begin,
+            std::vector<Body>::iterator end,
+            CubeArgs args = CubeArgs());
     }
 }
