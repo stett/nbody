@@ -89,9 +89,12 @@ vk::raii::CommandBuffer GPU::make_command_buffer()
 
 vk::raii::DescriptorPool GPU::make_descriptor_pool()
 {
-    // NOTE: I don't know how to calculate how many of these I actually need...
+    // The pool must cover every descriptor in every set allocated from it. We allocate
+    // one set from the layout below, which has two storage buffer bindings, so we need
+    // two storage buffer descriptors. Under-sizing this fails with ErrorOutOfPoolMemory
+    // on drivers that enforce it (e.g. MoltenVK).
     std::vector<vk::DescriptorPoolSize> pool_sizes = {
-        vk::DescriptorPoolSize(vk::DescriptorType::eStorageBuffer, 1)
+        vk::DescriptorPoolSize(vk::DescriptorType::eStorageBuffer, 2)
     };
     return { device, { { vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet }, 1, pool_sizes } };
 }
