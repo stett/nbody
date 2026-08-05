@@ -51,27 +51,26 @@ if (nbody_gpu)
     message("${exec_spirv_opt}")
     message("${exec_glslang_validator}")
 
-    # find shader files to compile to spir-v
-    file(GLOB_RECURSE shader_sources "shaders/*.*")
+    # find shader stage files to compile to spir-v. only real stage files are
+    # listed here; anything under shaders/include is a dependency, not a
+    # translation unit of its own.
+    file(GLOB_RECURSE shader_sources CONFIGURE_DEPENDS
+        "shaders/*.comp" "shaders/*.vert" "shaders/*.frag"
+        "shaders/*.geom" "shaders/*.tesc" "shaders/*.tese")
 
-    # create shader output directory
-    #set(shader_spv_dir "${CMAKE_CURRENT_BINARY_DIR}")
+    # every shader is rebuilt when any shared include changes
+    file(GLOB_RECURSE shader_includes CONFIGURE_DEPENDS "shaders/include/*")
+
+    # shader output directories. created at configure time so no build step
+    # has to depend on their existence.
     set(shader_spv_dir "${CMAKE_CURRENT_BINARY_DIR}/shaders")
-    message("Shader binary directory: ${shader_spv_dir}")
-    add_custom_command(
-        TARGET nbody
-        COMMAND ${CMAKE_COMMAND} -E make_directory ${shader_spv_dir}
-        COMMENT "Creating shader binary directory: ${shader_spv_dir}")
-
-    # create shader spv-header directory
     set(shader_h_dir "${CMAKE_CURRENT_SOURCE_DIR}/include/shaders")
+    message("Shader binary directory: ${shader_spv_dir}")
     message("Shader header directory: ${shader_h_dir}")
-    add_custom_command(
-        TARGET nbody
-        COMMAND ${CMAKE_COMMAND} -E make_directory ${shader_h_dir}
-        COMMENT "Creating shader header directory: ${shader_h_dir}")
+    file(MAKE_DIRECTORY "${shader_spv_dir}" "${shader_h_dir}")
 
     # loop over each glsl shader
+    set(shader_headers "")
     foreach(shader_source IN LISTS shader_sources)
 
         # extract filename & add the .spv extension.
@@ -83,23 +82,34 @@ if (nbody_gpu)
         set(shader_c_arr "spv_${filename}")
         message("Shader compilation step: ${filename} -> ${filename_spv} -> ${filename_h} : ${shader_c_arr}")
 
-        # generate the compile command
+        # glsl -> spv
         add_custom_command(
-            TARGET nbody
+            OUTPUT "${shader_spv}"
             MAIN_DEPENDENCY "${shader_source}"
-            DEPENDS "${source} ${shader_includes} ${shader_spv_dir}"
+            DEPENDS ${shader_includes}
             COMMAND "${exec_glslang_validator}" "${shader_source}" -V --target-env vulkan1.4 -I"${CMAKE_CURRENT_SOURCE_DIR}/shaders/include" -o "${shader_spv}"
-            COMMAND "${exec_spirv_opt}" ${shader_spv} -O --strip-debug -o "${shader_spv}"
-            COMMENT "Compiling shader spv: ${filename} -> ${filename_spv}")
+            COMMAND "${exec_spirv_opt}" "${shader_spv}" -O --strip-debug -o "${shader_spv}"
+            COMMENT "Compiling shader spv: ${filename} -> ${filename_spv}"
+            VERBATIM)
 
-        # generate command to
+        # spv -> c header. xxd writes the output file directly rather than via a
+        # shell redirect, so this stays VERBATIM-safe.
         add_custom_command(
-            TARGET nbody
-            OUTPUT ${SHADER_HEADER}
-            COMMAND xxd -i -n ${shader_c_arr} ${shader_spv} > ${shader_h}
-            DEPENDS ${SHADER_SPV}
-            COMMENT "Compiling shader header ${filename_spv} -> ${filename_h}")
+            OUTPUT "${shader_h}"
+            DEPENDS "${shader_spv}"
+            COMMAND xxd -i -n ${shader_c_arr} "${shader_spv}" "${shader_h}"
+            COMMENT "Compiling shader header ${filename_spv} -> ${filename_h}"
+            VERBATIM)
+
+        list(APPEND shader_headers "${shader_h}")
 
     endforeach()
+
+    # gpu.cpp #includes the generated headers, so they must exist before any of
+    # nbody's objects compile. a target-level dependency gives that ordering;
+    # attaching these steps to nbody as POST_BUILD would deadlock, since the
+    # headers would only be generated after the target that needs them links.
+    add_custom_target(nbody_shaders DEPENDS ${shader_headers})
+    add_dependencies(nbody nbody_shaders)
 
 endif()

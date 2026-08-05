@@ -1,5 +1,6 @@
 #pragma once
 #include <cmath>
+#include <cstddef>
 
 namespace nbody
 {
@@ -14,11 +15,11 @@ namespace nbody
         float y = 0;
         float z = 0;
 
-        float& operator[](const size_t i) {
+        float& operator[](const std::size_t i) {
             return *((&x) + i);
         }
 
-        const float& operator[](const size_t i) const {
+        const float& operator[](const std::size_t i) const {
             return *((&x) + i);
         }
 
