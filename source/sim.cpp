@@ -1,12 +1,12 @@
 #include <array>
 #include <cassert>
-#include <mutex>
 #include <stdexcept>
 #include "nbody/sim.h"
 #include "context.h"
 #include "solver.h"
 #include "solvers/cpu_barnes_hut.h"
 #include "solvers/cpu_brute_force.h"
+#include "solvers/gpu_solver.h"
 
 using nbody::Sim;
 using nbody::Variant;
@@ -22,6 +22,12 @@ namespace
     std::unique_ptr<nbody::Solver> make(std::shared_ptr<nbody::Context> context, nbody::StateRef state)
     {
         return std::make_unique<SolverType>(std::move(context), std::move(state));
+    }
+
+    template <nbody::Mode mode>
+    std::unique_ptr<nbody::Solver> make_gpu(std::shared_ptr<nbody::Context> context, nbody::StateRef state)
+    {
+        return std::make_unique<nbody::GpuSolver>(std::move(context), std::move(state), mode);
     }
 
     // Kept in a separate array from the factories so variants() can hand out a span of
@@ -51,8 +57,8 @@ namespace
             std::array<Factory, variant_count> t{};
             t[size_t(Variant::CpuBarnesHut)] = &make<nbody::CpuBarnesHutSolver>;
             t[size_t(Variant::CpuBruteForce)] = &make<nbody::CpuBruteForceSolver>;
-            t[size_t(Variant::GpuBarnesHut)] = nullptr;    // registered in a later step
-            t[size_t(Variant::GpuBruteForce)] = nullptr;
+            t[size_t(Variant::GpuBarnesHut)] = &make_gpu<nbody::Mode::NLogN>;
+            t[size_t(Variant::GpuBruteForce)] = &make_gpu<nbody::Mode::N2>;
             return t;
         }();
         return table;
@@ -68,12 +74,28 @@ namespace
         return v == Variant::GpuBarnesHut || v == Variant::GpuBruteForce;
     }
 
-    // The info table is process-wide, and marking a variant unavailable mutates it, so
-    // reads and that write have to be serialized.
-    std::mutex& infos_mutex()
+    // THREAD SAFETY: the variant table is process-wide and its readers hand out
+    // references and spans into it (info(), variants()), so a concurrent demotion would
+    // race with them -- reassigning unavailable_reason frees the string a reader may be
+    // holding. Locking only the write would not fix that, it would just hide it. Query
+    // and switch variants from one thread; the table is not synchronized.
+
+    // Discover whether the GPU variants can run here. Runs at most once, on the first
+    // availability query from anywhere; a function-local static makes that thread-safe
+    // and exactly-once without a separate init step the caller has to remember.
+    void probe_gpu_once()
     {
-        static std::mutex m;
-        return m;
+        static const bool probed = []
+        {
+            const std::string reason = nbody::GpuDevice::probe();   // empty on success
+            for (const Variant v : { Variant::GpuBarnesHut, Variant::GpuBruteForce })
+            {
+                infos()[size_t(v)].available = reason.empty();
+                infos()[size_t(v)].unavailable_reason = reason;
+            }
+            return true;
+        }();
+        (void)probed;
     }
 
     // Record that a variant which advertised itself as available could not actually be
@@ -88,8 +110,6 @@ namespace
     {
         if (!is_gpu(v))
             return;
-
-        const std::lock_guard<std::mutex> lock(infos_mutex());
         infos()[size_t(v)].available = false;
         infos()[size_t(v)].unavailable_reason = reason;
     }
@@ -97,16 +117,23 @@ namespace
 
 std::shared_ptr<nbody::GpuDevice> nbody::Context::require_gpu()
 {
-    throw std::runtime_error("gpu backend not built yet");
+    // Cached so that switching between the GPU variants reuses one device rather than
+    // recompiling shaders each time.
+    if (!gpu)
+        gpu = std::make_shared<GpuDevice>();
+    return gpu;
 }
 
 std::span<const VariantInfo> Sim::variants()
 {
+    probe_gpu_once();
     return infos();
 }
 
 const VariantInfo& Sim::info(const Variant v)
 {
+    probe_gpu_once();
+
     if (!valid(v))
     {
         // Don't clamp to a real entry: that would report some other variant's name and
@@ -162,7 +189,7 @@ bool Sim::set_variant(const Variant v)
     if (v == _variant && _solver)
         return true;
 
-    const VariantInfo& want = info(v);
+    const VariantInfo& want = info(v);   // probes on first use
     if (!want.available)
     {
         _last_error = want.unavailable_reason;

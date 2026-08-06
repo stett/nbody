@@ -56,16 +56,30 @@ namespace nbody
         void read(void* data, size_t data_size) const;
     };
 
-    class GPU
+    // A vulkan compute device plus the pipelines the simulation runs on it. Owned by
+    // Context and shared between the GPU variants, so switching between them does not
+    // pay for shader compilation again.
+    class GpuDevice
     {
     public:
 
-        GPU();
+        // Throws if the device cannot be brought up.
+        GpuDevice();
+
+        // Is there a compute-capable Vulkan device on this machine? Returns an empty
+        // string if so, otherwise a human-readable reason. Never throws.
+        //
+        // Deliberately cheap: it creates an instance and inspects queue families, but
+        // does not create a logical device or compile shaders. Shader compilation runs
+        // shaderc over two GLSL sources and is far too slow to pay merely to decide
+        // whether to offer a variant in a menu. Full construction failure is reported
+        // separately, when the variant is first selected.
+        static std::string probe() noexcept;
 
         void write(const std::vector<Body>& bodies, const std::vector<bh::Node>& nodes);
         void read(std::vector<Body>& bodies);
         void integrate(float dt, float size, bool wrap);
-        void accelerate(float theta, Mode mode);
+        void accelerate(float theta, float gravity, Mode mode);
 
     private:
 
