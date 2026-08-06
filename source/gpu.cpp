@@ -1,5 +1,6 @@
-#if NBODY_GPU
+#include <algorithm>
 #include <iostream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 #include <array>
@@ -173,15 +174,19 @@ void GPU::write(const std::vector<Body>& bodies, const std::vector<bh::Node>& no
 
 void GPU::read(std::vector<Body>& bodies)
 {
-    // map the memory back to the bodies array
-    assert(bodies.size() * sizeof(Body) >= buffer_bodies.size);
-    buffer_bodies.read(bodies.data(), buffer_bodies.size);
+    // Copy back only what both sides can hold. buffer_bodies.size is the allocation,
+    // which only ever grows, so reading that many bytes overruns `bodies` whenever the
+    // body count has shrunk since the buffer was sized.
+    const size_t want = bodies.size() * sizeof(Body);
+    buffer_bodies.read(bodies.data(), std::min<size_t>(want, buffer_bodies.used));
 }
 
-void GPU::integrate(const float dt)
+void GPU::integrate(const float dt, const float size, const bool wrap)
 {
     // update relevant push constants
     push_constants.dt = dt;
+    push_constants.size = size;
+    push_constants.wrap = wrap ? 1 : 0;
 
     // set up command to run the integrate pipeline
     command_buffer.begin({ });
@@ -269,15 +274,20 @@ void nbody::Buffer::write(const void* data, const size_t data_size)
         allocate(data_size);
     }
 
+    // track how much of the (possibly larger) allocation is actually live
+    used = data_size;
+    if (used == 0) { return; }
+
     // copy data to gpu mapped memory
-    void* target = memory.mapMemory(0, data_size);
-    memcpy(target, data, data_size);
+    void* target = memory.mapMemory(0, used);
+    memcpy(target, data, used);
     memory.unmapMemory();
 }
 
 void nbody::Buffer::read(void* data, const size_t data_size) const
 {
     assert(data_size <= size);
+    if (data_size == 0) { return; }
     void* source = memory.mapMemory(0, data_size);
     std::memcpy(data, source, data_size);
     memory.unmapMemory();
@@ -300,12 +310,15 @@ std::vector<uint32_t> GPU::glsl_to_spv(const std::string& glsl, const std::strin
         options
     );
 
-    // Check for compilation errors.
+    // Check for compilation errors. This must throw rather than assert: an assert is
+    // compiled out in release (leaving an empty SPIR-V blob and an invalid shader
+    // module), and in a debug build it pops a modal dialog that hangs headless runs.
+    // Throwing lets the caller report the failure and fall back to the CPU path.
     if (result.GetCompilationStatus() != shaderc_compilation_status_success)
     {
-        std::cerr << "Shader compilation error: " << result.GetErrorMessage() << std::endl;
-        assert(false);
-        return { };
+        const std::string error = "shader compilation failed (" + identifier + "): " + result.GetErrorMessage();
+        std::cerr << error << std::endl;
+        throw std::runtime_error(error);
     }
 
     // Get the SPIR-V code as a vector of uint32_t.
@@ -341,5 +354,3 @@ vk::raii::DeviceMemory GPU::alloc_device_memory(
     vk::MemoryAllocateInfo memoryAllocateInfo( memoryRequirements.size, memoryTypeIndex );
     return { device, memoryAllocateInfo };
 }
-
-#endif

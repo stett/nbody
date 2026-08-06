@@ -1,5 +1,4 @@
 #pragma once
-#if NBODY_GPU
 #include <vector>
 #include "vulkan/vulkan_raii.hpp"
 #include "nbody/body.h"
@@ -10,6 +9,9 @@ namespace nbody
 {
     enum class Mode : int { N2 = 0, NLogN = 1 };
 
+    // Must match the push_constant block in glsl_common (source/shaders.h) field for
+    // field — the whole struct is memcpy'd across via pushConstants<PushConstants>.
+    // Append new fields at the end so existing offsets stay put.
     struct PushConstants
     {
         float dt = 0;
@@ -18,11 +20,18 @@ namespace nbody
         int num_bodies = 0;
         int num_nodes = 0;
         Mode mode = Mode::NLogN;
+        float size = 0;
+        int wrap = 1;
     };
 
     struct Buffer
     {
+        // `size` is the allocated capacity, which only ever grows. `used` is how many
+        // bytes of it currently hold live data — reads must clamp to `used`, otherwise
+        // shrinking the body count copies stale capacity past the end of the caller's
+        // vector.
         vk::DeviceSize size;
+        vk::DeviceSize used = 0;
         vk::BufferUsageFlags usage;
         vk::MemoryPropertyFlags properties;
         vk::raii::PhysicalDevice& physical_device;
@@ -55,7 +64,7 @@ namespace nbody
 
         void write(const std::vector<Body>& bodies, const std::vector<bh::Node>& nodes);
         void read(std::vector<Body>& bodies);
-        void integrate(float dt);
+        void integrate(float dt, float size, bool wrap);
         void accelerate(float theta, Mode mode);
 
     private:
@@ -120,4 +129,3 @@ namespace nbody
                 vk::MemoryPropertyFlags memoryPropertyFlags);
     };
 }
-#endif

@@ -1,39 +1,35 @@
-cmake_minimum_required(VERSION 3.5)
+cmake_minimum_required(VERSION 3.24)
 project(nbody)
 set(CMAKE_CXX_STANDARD 20)
-
-# options
-option(nbody_gpu "include gpu acceleration" ON)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # add dependencies
 add_subdirectory(external)
-
-# preprocessor defines
-add_compile_definitions(NBODY_GPU=1)
 
 # add nbody library
 file(GLOB_RECURSE sources "${CMAKE_CURRENT_SOURCE_DIR}/source/*.cpp")
 add_library(nbody STATIC ${sources})
 
 # link external libraries
-set(CMAKE_CXX_STANDARD 20)
 target_include_directories(nbody PUBLIC "include" "source")
 target_link_libraries(nbody PUBLIC BS_thread_pool)
-if (nbody_gpu)
-    message("VULKAN_SDK: $ENV{VULKAN_SDK}")
-    find_package(Vulkan REQUIRED COMPONENTS shaderc_combined)
-    target_link_libraries(nbody PUBLIC Vulkan::Vulkan Vulkan::Headers Vulkan::shaderc_combined)
-    message("Vulkan_VERSION: ${Vulkan_VERSION}")
-    message("Vulkan_LIBRARIES: ${Vulkan_LIBRARIES}")
-    message("Vulkan_LIBRARY: ${Vulkan_LIBRARY}")
-    message("Vulkan_INCLUDE_DIR: ${Vulkan_INCLUDE_DIR}")
-endif()
+
+# GPU support is a build-time dependency but a *run-time* capability: the Vulkan backend
+# is always compiled, and whether a usable compute device actually exists is discovered at
+# run time (see GPU::init / Sim::init_gpu). There is deliberately no build option here —
+# a missing or unusable device must degrade to the CPU path, not fail the build.
+message(STATUS "VULKAN_SDK: $ENV{VULKAN_SDK}")
+find_package(Vulkan REQUIRED COMPONENTS shaderc_combined)
+# PRIVATE: no public header includes vulkan (gpu.h lives under source/), so consumers must
+# not inherit the include dirs. nbody is STATIC, so these still propagate for linking.
+target_link_libraries(nbody PRIVATE Vulkan::Vulkan Vulkan::shaderc_combined)
+target_link_libraries(nbody PUBLIC Vulkan::Headers)
+message(STATUS "Vulkan_VERSION: ${Vulkan_VERSION}")
 
 # set up compile options
 target_compile_features(nbody PRIVATE cxx_std_20)
 if (MSVC)
-    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /MT")
-    set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} /MTd")
+    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /MD")
 endif()
 
 # add nbody test suite

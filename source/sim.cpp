@@ -1,15 +1,30 @@
-#include <algorithm>
-#include <vector>
-#include <future>
-#include <thread>
-#include <cmath>
+#include <iostream>
 #include "nbody/sim.h"
 #include "nbody/constants.h"
-
-// TEMP
-#include <iostream>
+#include "detail/parallel.h"
+#include "detail/physics.h"
+#include "detail/tree.h"
+#include "gpu.h"
 
 using nbody::Sim;
+
+Sim::Sim() = default;
+
+void Sim::init_gpu()
+{
+    try {
+        gpu = std::make_unique<GPU>();
+        use_gpu = true;
+    } catch (const std::exception& e) {
+        std::cerr << "GPU init failed, falling back to CPU: " << e.what() << "\n";
+        use_gpu = false;
+    } catch (...) {
+        std::cerr << "GPU init failed (unknown error), falling back to CPU\n";
+        use_gpu = false;
+    }
+}
+
+Sim::~Sim() = default;
 
 void Sim::update(float dt)
 {
@@ -20,82 +35,47 @@ void Sim::update(float dt)
 void Sim::accelerate()
 {
     // insert all bodies into the acceleration tree
-    acc_tree.clear({ .size = size });
-    acc_tree.reserve(bodies.size() << 2);
-    for (Body& body : bodies)
-        acc_tree.insert(body.pos, body.mass);
+    detail::build_tree(acc_tree, bodies, size);
 
-#if NBODY_GPU
     if (use_gpu)
     {
-        gpu.write(bodies, acc_tree.nodes());
-        gpu.accelerate(.5f, Mode::NLogN);
+        gpu->write(bodies, acc_tree.nodes());
+        gpu->accelerate(theta, Mode::NLogN);
         return;
     }
-#endif
 
     // accelerate all bodies
-    visit([this](Body& body)
+    detail::parallel_blocks(pool, bodies.size(), [this](const size_t begin, const size_t end)
     {
-        body.acc = {0,0,0};
-        acc_tree.apply(body.pos, [&body](const bh::Node& node)
+        for (size_t i = begin; i < end; ++i)
         {
-            const Vector delta = node.com - body.pos;
-            const float delta_sq = delta.size_sq();
-            const float radii_sq = body.radius * body.radius;
-
-            // if we're too close, don't apply a force
-            // NOTE: this condition no longer needed if we have collisions
-            if (delta_sq < radii_sq)
-                return;
-
-            // compute force of gravity
-            body.acc += G * node.mass * delta / (std::sqrt(delta_sq) * delta_sq);
-        });
+            Body& body = bodies[i];
+            body.acc = { 0, 0, 0 };
+            acc_tree.apply(body.pos, [this, &body](const bh::Node& node)
+            {
+                body.acc += detail::gravity(body.pos, body.radius, node.com, node.mass, gravity);
+            }, theta);
+        }
     });
 }
 
 void Sim::integrate(float dt)
 {
-#if NBODY_GPU
     if (use_gpu)
     {
-        gpu.integrate(dt);
-        gpu.read(bodies);
+        gpu->integrate(dt, size, wrap);
+        gpu->read(bodies);
         return;
     }
-#endif
 
-    visit([this, dt](Body& body)
-          {
-              // semi-implicit euler is pretty good for gravitational forces
-              body.vel += body.acc * dt;
-              body.pos += body.vel * dt;
-
-              // wrap space into a 4d taurus
-              for (size_t i = 0; i < 3; ++i) {
-                  while (body.pos[i] > size*.5)
-                      body.pos[i] -= size - std::numeric_limits<float>::epsilon();
-                  while (body.pos[i] < -size*.5)
-                      body.pos[i] += size - std::numeric_limits<float>::epsilon();
-              }
-          });
+    detail::parallel_blocks(pool, bodies.size(), [this, dt](const size_t begin, const size_t end)
+    {
+        for (size_t i = begin; i < end; ++i)
+            detail::integrate_euler(bodies[i], dt, size, wrap);
+    });
 }
 
 void Sim::visit(const std::function<void(Body& body)>& func)
 {
-    // spread visit function across thread pools
-    const size_t num_threads = std::thread::hardware_concurrency();
-    const size_t num_per_thread = bodies.size() / num_threads;
-    std::vector<std::future<void>> futures;
-    futures.reserve(num_threads);
-    for (size_t i = 0; i < num_threads; ++i)
-        futures.emplace_back(pool.submit_task([this, i, num_per_thread, &func]() {
-            std::for_each(
-                bodies.begin() + (i + 0) * num_per_thread,
-                bodies.begin() + (i + 1) * num_per_thread,
-                func);
-        }));
-    for (std::future<void>& future : futures)
-        future.wait();
+    detail::parallel_for(pool, bodies.size(), [this, &func](const size_t i) { func(bodies[i]); });
 }

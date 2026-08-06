@@ -26,6 +26,7 @@ static const std::string glsl_common = R"glsl(
         uint __pad1;
     };
 
+    // must match nbody::PushConstants (source/gpu.h) field for field
     layout(push_constant) uniform PushConstants {
         float dt;
         float theta;
@@ -33,6 +34,8 @@ static const std::string glsl_common = R"glsl(
         int num_bodies;
         int num_nodes;
         int mode;
+        float size;
+        int wrap;
     } pc;
 
     const int N2 = 0;
@@ -58,6 +61,16 @@ static const std::string glsl_integrate = glsl_common + R"glsl(
         // integrate using semi-implicit euler
         vel += acc * pc.dt;
         pos += vel * pc.dt;
+
+        // wrap space into a 3-torus. Must stay identical to nbody::detail::wrap
+        // (source/detail/physics.h) or the CPU and GPU variants will disagree about
+        // where bodies end up.
+        // NOTE: `half` is a reserved keyword in GLSL — don't name a local that.
+        if (pc.wrap != 0 && pc.size > 0.0)
+        {
+            const float half_size = pc.size * 0.5;
+            pos = mod(mod(pos + vec3(half_size), vec3(pc.size)) + vec3(pc.size), vec3(pc.size)) - vec3(half_size);
+        }
 
         // update body info
         bodies[i].pos = pos;
