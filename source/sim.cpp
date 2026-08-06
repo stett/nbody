@@ -13,14 +13,14 @@ Sim::Sim() = default;
 void Sim::init_gpu()
 {
     try {
-        gpu = std::make_unique<GPU>();
-        use_gpu = true;
+        _gpu = std::make_unique<GPU>();
+        _use_gpu = true;
     } catch (const std::exception& e) {
         std::cerr << "GPU init failed, falling back to CPU: " << e.what() << "\n";
-        use_gpu = false;
+        _use_gpu = false;
     } catch (...) {
         std::cerr << "GPU init failed (unknown error), falling back to CPU\n";
-        use_gpu = false;
+        _use_gpu = false;
     }
 }
 
@@ -35,47 +35,47 @@ void Sim::update(float dt)
 void Sim::accelerate()
 {
     // insert all bodies into the acceleration tree
-    detail::build_tree(acc_tree, bodies, size);
+    detail::build_tree(_acc_tree, _bodies, _size);
 
-    if (use_gpu)
+    if (_use_gpu)
     {
-        gpu->write(bodies, acc_tree.nodes());
-        gpu->accelerate(theta, Mode::NLogN);
+        _gpu->write(_bodies, _acc_tree.nodes());
+        _gpu->accelerate(_theta, Mode::NLogN);
         return;
     }
 
     // accelerate all bodies
-    detail::parallel_blocks(pool, bodies.size(), [this](const size_t begin, const size_t end)
+    detail::parallel_blocks(_pool, _bodies.size(), [this](const size_t begin, const size_t end)
     {
         for (size_t i = begin; i < end; ++i)
         {
-            Body& body = bodies[i];
+            Body& body = _bodies[i];
             body.acc = { 0, 0, 0 };
-            acc_tree.apply(body.pos, [this, &body](const bh::Node& node)
+            _acc_tree.apply(body.pos, [this, &body](const bh::Node& node)
             {
-                body.acc += detail::gravity(body.pos, body.radius, node.com, node.mass, gravity);
-            }, theta);
+                body.acc += detail::gravity(body.pos, body.radius, node.com, node.mass, _gravity);
+            }, _theta);
         }
     });
 }
 
 void Sim::integrate(float dt)
 {
-    if (use_gpu)
+    if (_use_gpu)
     {
-        gpu->integrate(dt, size, wrap);
-        gpu->read(bodies);
+        _gpu->integrate(dt, _size, _wrap);
+        _gpu->read(_bodies);
         return;
     }
 
-    detail::parallel_blocks(pool, bodies.size(), [this, dt](const size_t begin, const size_t end)
+    detail::parallel_blocks(_pool, _bodies.size(), [this, dt](const size_t begin, const size_t end)
     {
         for (size_t i = begin; i < end; ++i)
-            detail::integrate_euler(bodies[i], dt, size, wrap);
+            detail::integrate_euler(_bodies[i], dt, _size, _wrap);
     });
 }
 
 void Sim::visit(const std::function<void(Body& body)>& func)
 {
-    detail::parallel_for(pool, bodies.size(), [this, &func](const size_t i) { func(bodies[i]); });
+    detail::parallel_for(_pool, _bodies.size(), [this, &func](const size_t i) { func(_bodies[i]); });
 }
