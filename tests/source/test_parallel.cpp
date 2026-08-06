@@ -18,7 +18,12 @@ TEST_CASE("parallel_for visits every index exactly once", "[parallel]")
     for (std::atomic<int>& hit : hits)
         hit.store(0);
 
-    nbody::detail::parallel_for(pool, n, [&hits](const size_t i) { ++hits[i]; });
+    std::atomic<size_t> visits{0};
+    nbody::detail::parallel_for(pool, n, [&](const size_t i) { ++hits[i]; ++visits; });
+
+    // Asserted separately so the n == 0 case still checks something rather than
+    // silently running an empty loop.
+    REQUIRE(visits.load() == n);
 
     for (const std::atomic<int>& hit : hits)
         REQUIRE(hit.load() == 1);

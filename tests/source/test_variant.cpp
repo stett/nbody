@@ -125,6 +125,54 @@ TEST_CASE("every variant reports itself consistently", "[sim][variant]")
     }
 }
 
+TEST_CASE("every variant picks up bodies added after a step", "[sim][variant]")
+{
+    // The demo's spawn_galaxy pattern: resize the body array and fill the new tail
+    // between steps, then check the new stars are actually in the solver's work set.
+    //
+    // NOTE: this does NOT exercise the ingest contract, despite appearances. It steps
+    // via update(), and accelerate() uploads unconditionally, so the mutation reaches
+    // the device whether or not ingest() ran -- gutting ingest() leaves this test
+    // passing. The integrate()-only path in test_gpu.cpp is what covers that.
+    size_t tested = 0;
+    for (const nbody::VariantInfo& info : nbody::Sim::variants())
+    {
+        if (!info.available)
+            continue;
+
+        INFO("variant: " << info.name);
+        nbody::Sim sim(info.variant);
+        REQUIRE(sim.variant() == info.variant);
+        ++tested;
+
+        seed_disk(sim, 128);
+        sim.update(1.f / 120.f);
+
+        const size_t added = 64;
+        const size_t first_added = sim.bodies().size();
+        {
+            std::vector<nbody::Body>& bodies = sim.mutable_bodies();
+            bodies.resize(bodies.size() + added);
+            nbody::util::disk(bodies.end() - added, bodies.end(),
+                { .center = { 400.f, 0.f, 0.f }, .outer_radius = 50.f });
+        }
+
+        sim.update(1.f / 120.f);
+
+        REQUIRE(sim.bodies().size() == first_added + added);
+
+        // Skip the new group's own central mass at first_added; the stars around it
+        // must have felt a force.
+        size_t accelerated = 0;
+        for (size_t i = first_added + 1; i < sim.bodies().size(); ++i)
+            if (sim.bodies()[i].acc.size_sq() > 0.f)
+                ++accelerated;
+
+        REQUIRE(accelerated == added - 1);
+    }
+    REQUIRE(tested >= 2);
+}
+
 TEST_CASE("barnes-hut approximates brute force", "[sim][variant]")
 {
     // Cross-algorithm, so this is an aggregate error budget rather than a per-body
