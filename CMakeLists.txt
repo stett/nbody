@@ -16,8 +16,9 @@ target_link_libraries(nbody PUBLIC BS_thread_pool)
 
 # GPU support is a build-time dependency but a *run-time* capability: the Vulkan backend
 # is always compiled, and whether a usable compute device actually exists is discovered at
-# run time (see GPU::init / Sim::init_gpu). There is deliberately no build option here —
-# a missing or unusable device must degrade to the CPU path, not fail the build.
+# run time, which decides whether the GPU simulation variants are offered. There is
+# deliberately no build option here — a missing or unusable device must degrade to a CPU
+# variant, not fail the build.
 message(STATUS "VULKAN_SDK: $ENV{VULKAN_SDK}")
 find_package(Vulkan REQUIRED COMPONENTS shaderc_combined)
 # PRIVATE: no public header includes vulkan (gpu.h lives under source/), so consumers must

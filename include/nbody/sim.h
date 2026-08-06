@@ -1,102 +1,118 @@
 #pragma once
-#include <vector>
-#include <functional>
+#include <cstdint>
 #include <memory>
 #include <span>
-#include "BS_thread_pool.hpp"
+#include <string>
+#include <vector>
 #include "body.h"
 #include "bhtree.h"
-#include "constants.h"
+#include "state.h"
+#include "variant.h"
 
 namespace nbody
 {
-    class GPU;  // forward declaration — keeps Vulkan headers out of sim.h
+    class Solver;      // source/solver.h
+    struct Context;    // source/context.h
 
+    // A simulation, running one of several interchangeable implementations.
+    //
+    // Sim is a facade rather than a base class: it keeps a stable identity while the
+    // underlying solver is swapped, so callers can hold a Sim by value and keep
+    // references to it across a variant change. Switching carries the state over --
+    // see State for the format and Solver for the conversion contract.
     class Sim
     {
     public:
 
+        // Defaults to CpuBarnesHut: always available, and never touches Vulkan.
         Sim();
+        explicit Sim(Variant variant);
         ~Sim();
 
-        // Try to bring up the compute backend. Falls back to the CPU path on any
-        // failure, so GPU support is a runtime capability rather than a build option.
-        void init_gpu();
-        [[nodiscard]] bool using_gpu() const { return _use_gpu; }
+        // Movable, but a moved-from Sim holds neither a state nor a solver: it may only
+        // be assigned to or destroyed. Calling anything else on one is undefined.
+        Sim(Sim&&) noexcept;
+        Sim& operator=(Sim&&) noexcept;
+        Sim(const Sim&) = delete;
+        Sim& operator=(const Sim&) = delete;
 
-        // --- state -------------------------------------------------------------
+        // --- variant discovery ---------------------------------------------------
+        // Availability is probed once, lazily, on the first query.
+        [[nodiscard]] static std::span<const VariantInfo> variants();
+        [[nodiscard]] static const VariantInfo& info(Variant v);
+        [[nodiscard]] static bool available(Variant v);
 
-        // Read-only access. This is the default spelling on purpose: a later variant
-        // may hold its bodies somewhere other than this vector, and reads are cheap
-        // while handing out mutable access is not.
-        [[nodiscard]] const std::vector<Body>& bodies() const { return _bodies; }
+        // --- variant selection ----------------------------------------------------
+        [[nodiscard]] Variant variant() const { return _variant; }
 
-        // Mutable access. Callers that only read must NOT use this — it is the hook a
-        // later variant uses to notice the state changed and re-ingest it, so taking it
-        // for a read costs a needless conversion. Spelled distinctly rather than as a
-        // non-const overload so that `sim.bodies()` on a non-const Sim cannot silently
-        // select the expensive one.
-        [[nodiscard]] std::vector<Body>& mutable_bodies() { return _bodies; }
+        // Switch implementation, carrying the state across. On failure the current
+        // variant keeps running and last_error() explains why.
+        bool set_variant(Variant v);
 
-        // world extent; space wraps over [-size/2, +size/2] when wrap() is set
-        [[nodiscard]] float size() const { return _size; }
-        void set_size(const float v) { _size = v; }
+        [[nodiscard]] const std::string& last_error() const { return _last_error; }
 
-        // barnes-hut opening angle
-        [[nodiscard]] float theta() const { return _theta; }
-        void set_theta(const float v) { _theta = v; }
+        // --- state ------------------------------------------------------------------
+        // Reads route through the active solver so that a variant holding its own
+        // representation gets the chance to materialize it first.
+        //
+        // Returns a pointer to const: handing out a mutable State from a const Sim would
+        // let callers change the simulation without bumping the revision, which would
+        // silently defeat the whole staleness protocol.
+        [[nodiscard]] std::shared_ptr<const State> state() const;
 
-        // gravitational constant
-        [[nodiscard]] float gravity() const { return _gravity; }
-        void set_gravity(const float v) { _gravity = v; }
+        // Read-only access to the bodies. The default spelling on purpose.
+        [[nodiscard]] const std::vector<Body>& bodies() const;
 
-        // whether space wraps into a 3-torus. Honored identically by every backend.
-        [[nodiscard]] bool wrap() const { return _wrap; }
-        void set_wrap(const bool v) { _wrap = v; }
+        // Mutable access. Marks the state dirty, so the active solver re-ingests before
+        // the next step. Callers that only read must use bodies() instead: this is
+        // spelled distinctly rather than as a non-const overload precisely so it cannot
+        // be selected by accident from a non-const Sim.
+        [[nodiscard]] std::vector<Body>& mutable_bodies();
 
-        // --- stepping ----------------------------------------------------------
+        [[nodiscard]] float size() const;
+        void set_size(float v);
 
-        // full update of simulation
+        [[nodiscard]] float theta() const;
+        void set_theta(float v);
+
+        [[nodiscard]] float gravity() const;
+        void set_gravity(float v);
+
+        [[nodiscard]] bool wrap() const;
+        void set_wrap(bool v);
+
+        // --- stepping ------------------------------------------------------------
         void update(float dt);
-
-        // update of acceleration
         void accelerate();
-
-        // integration of acceleration and velocity
         void integrate(float dt);
 
-        // apply a function to every body in parallel
-        void visit(const std::function<void(Body& body)>& func);
-
-        // --- visualization ------------------------------------------------------
-        // The barnes-hut tree, or nullptr for a backend that builds none. Callers must
-        // tolerate null: not every simulation variant is tree-based.
-        [[nodiscard]] const bh::Tree* tree() const { return &_acc_tree; }
+        // --- visualization ---------------------------------------------------------
+        // The barnes-hut tree, or nullptr when the active variant builds none.
+        [[nodiscard]] const bh::Tree* tree() const;
 
         // Convenience for the common "how many nodes / draw them" case. Empty when
         // there is no tree.
         //
         // WARNING: the returned span is invalidated by the next accelerate()/update(),
-        // which rebuilds and reserves the node array. Use it immediately; never store it
-        // across a step.
-        [[nodiscard]] std::span<const bh::Node> nodes() const
-        {
-            const bh::Tree* t = tree();
-            return t ? std::span<const bh::Node>(t->nodes()) : std::span<const bh::Node>{};
-        }
+        // which rebuilds and reserves the node array. Use it immediately; never store
+        // it across a step.
+        [[nodiscard]] std::span<const bh::Node> nodes() const;
 
     private:
 
-        float _size = 10000.f;
-        float _theta = .5f;
-        float _gravity = G;
-        bool _wrap = true;
+        // Re-converge the solver on the state if a caller has mutated it. Called once
+        // per actual change, not once per stage. const because reads must be able to
+        // drive it -- see Solver::ingest().
+        void sync_solver() const;
 
-        std::vector<Body> _bodies;
-        bh::Tree _acc_tree;
-        BS::thread_pool _pool;
+        std::shared_ptr<Context> _context;
+        StateRef _state;
+        std::unique_ptr<Solver> _solver;
+        Variant _variant = Variant::CpuBarnesHut;
+        std::string _last_error;
 
-        bool _use_gpu = false;
-        std::unique_ptr<GPU> _gpu;
+        // The State::revision the active solver last ingested. Mutable because
+        // sync_solver() is const; it tracks a cache, not the simulation.
+        mutable uint64_t _synced_revision = 0;
     };
 }

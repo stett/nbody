@@ -4,12 +4,15 @@
 
 // The GLSL integrate shader used to skip the toroidal wrap entirely while the CPU path
 // applied it, so the two backends disagreed about where bodies ended up. These tests pin
-// the shared behavior, and cover `wrap` being switchable at run time.
+// the shared behavior across every available variant, and cover `wrap` being switchable
+// at run time.
+//
+// Each loop counts the variants it actually exercised and requires a floor. Skipping
+// unavailable variants is legitimate, but without a floor a run where everything was
+// unavailable would report a pass having tested nothing.
 namespace
 {
-    // Sim holds a BS::thread_pool by value, which is neither copyable nor movable, so
-    // configure in place rather than returning one.
-    void setup_drifting(nbody::Sim& sim, const bool use_gpu)
+    void setup_drifting(nbody::Sim& sim)
     {
         sim.set_size(1000.f);
         sim.set_gravity(0.f);   // isolate the integrator from any gravitational force
@@ -20,67 +23,88 @@ namespace
             .vel = { 10.f, 0.f, 0.f },
             .mass = 1.f,
         };
-        if (use_gpu)
-            sim.init_gpu();
     }
+
+    // both CPU variants are always available
+    constexpr size_t min_variants = 2;
 }
 
-TEST_CASE("cpu wraps a body that leaves the world box", "[sim][wrap]")
+TEST_CASE("every variant wraps a body that leaves the world box", "[sim][wrap]")
 {
-    nbody::Sim sim;
-    setup_drifting(sim, false);
-    REQUIRE_FALSE(sim.using_gpu());
+    size_t tested = 0;
+    for (const nbody::VariantInfo& info : nbody::Sim::variants())
+    {
+        if (!info.available)
+            continue;
 
-    sim.update(1.f);   // unwrapped this would land at ~509
+        INFO("variant: " << info.name);
+        nbody::Sim sim(info.variant);
 
-    const nbody::Vector p = sim.bodies()[0].pos;
-    REQUIRE(std::abs(p.x) <= 500.f);
-    REQUIRE(std::abs(p.y) <= 500.f);
-    REQUIRE(std::abs(p.z) <= 500.f);
+        // guard against a silent fallback making this loop re-test the default
+        REQUIRE(sim.variant() == info.variant);
+        ++tested;
+
+        setup_drifting(sim);
+        sim.update(1.f);   // unwrapped this would land at ~509
+
+        const nbody::Vector p = sim.bodies()[0].pos;
+        REQUIRE(std::abs(p.x) <= 500.f);
+        REQUIRE(std::abs(p.y) <= 500.f);
+        REQUIRE(std::abs(p.z) <= 500.f);
+    }
+    REQUIRE(tested >= min_variants);
 }
 
-TEST_CASE("cpu leaves the body alone when wrap is off", "[sim][wrap]")
+TEST_CASE("every variant honors wrap being switched off", "[sim][wrap]")
 {
-    nbody::Sim sim;
-    setup_drifting(sim, false);
-    sim.set_wrap(false);
+    size_t tested = 0;
+    for (const nbody::VariantInfo& info : nbody::Sim::variants())
+    {
+        if (!info.available)
+            continue;
 
-    sim.update(1.f);
+        INFO("variant: " << info.name);
+        nbody::Sim sim(info.variant);
+        REQUIRE(sim.variant() == info.variant);
+        ++tested;
 
-    REQUIRE(sim.bodies()[0].pos.x > 500.f);
+        setup_drifting(sim);
+        sim.set_wrap(false);
+
+        sim.update(1.f);
+
+        REQUIRE(sim.bodies()[0].pos.x > 500.f);
+    }
+    REQUIRE(tested >= min_variants);
 }
 
-TEST_CASE("gpu wraps identically to the cpu", "[sim][wrap][gpu]")
+TEST_CASE("all variants agree on where a wrapped body lands", "[sim][wrap]")
 {
-    nbody::Sim gpu_sim;
-    setup_drifting(gpu_sim, true);
-    if (!gpu_sim.using_gpu())
-        SKIP("no usable Vulkan compute device");
+    // Pin every available variant against the always-present CPU reference, so a
+    // backend that wraps differently (as the GPU shader once did) is caught.
+    nbody::Sim reference(nbody::Variant::CpuBarnesHut);
+    setup_drifting(reference);
+    reference.update(1.f);
+    const nbody::Vector expected = reference.bodies()[0].pos;
 
-    nbody::Sim cpu_sim;
-    setup_drifting(cpu_sim, false);
+    size_t tested = 0;
+    for (const nbody::VariantInfo& info : nbody::Sim::variants())
+    {
+        if (!info.available)
+            continue;
 
-    gpu_sim.update(1.f);
-    cpu_sim.update(1.f);
+        INFO("variant: " << info.name);
+        nbody::Sim sim(info.variant);
+        REQUIRE(sim.variant() == info.variant);
+        ++tested;
 
-    const nbody::Vector g = gpu_sim.bodies()[0].pos;
-    const nbody::Vector c = cpu_sim.bodies()[0].pos;
+        setup_drifting(sim);
+        sim.update(1.f);
 
-    REQUIRE(std::abs(g.x) <= 500.f);
-    REQUIRE(std::abs(g.x - c.x) < 1e-3f);
-    REQUIRE(std::abs(g.y - c.y) < 1e-3f);
-    REQUIRE(std::abs(g.z - c.z) < 1e-3f);
-}
-
-TEST_CASE("gpu honors wrap being switched off", "[sim][wrap][gpu]")
-{
-    nbody::Sim sim;
-    setup_drifting(sim, true);
-    if (!sim.using_gpu())
-        SKIP("no usable Vulkan compute device");
-
-    sim.set_wrap(false);
-    sim.update(1.f);
-
-    REQUIRE(sim.bodies()[0].pos.x > 500.f);
+        const nbody::Vector p = sim.bodies()[0].pos;
+        REQUIRE(std::abs(p.x - expected.x) < 1e-3f);
+        REQUIRE(std::abs(p.y - expected.y) < 1e-3f);
+        REQUIRE(std::abs(p.z - expected.z) < 1e-3f);
+    }
+    REQUIRE(tested >= min_variants);
 }
