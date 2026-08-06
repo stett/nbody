@@ -9,7 +9,7 @@ namespace nbody
 {
     enum class Mode : int { N2 = 0, NLogN = 1 };
 
-    // Must match the push_constant block in glsl_common (source/shaders.h) field for
+    // Must match the push_constant block in shaders/include/common.glsl field for
     // field — the whole struct is memcpy'd across via pushConstants<PushConstants>.
     // Append new fields at the end so existing offsets stay put.
     struct PushConstants
@@ -70,10 +70,10 @@ namespace nbody
         // string if so, otherwise a human-readable reason. Never throws.
         //
         // Deliberately cheap: it creates an instance and inspects queue families, but
-        // does not create a logical device or compile shaders. Shader compilation runs
-        // shaderc over two GLSL sources and is far too slow to pay merely to decide
-        // whether to offer a variant in a menu. Full construction failure is reported
-        // separately, when the variant is first selected.
+        // does not create a logical device, allocate buffers or build pipelines — all of
+        // which are far too slow to pay merely to decide whether to offer a variant in a
+        // menu. Full construction failure is reported separately, when the variant is
+        // first selected.
         static std::string probe() noexcept;
 
         void write(const std::vector<Body>& bodies, const std::vector<bh::Node>& nodes);
@@ -118,7 +118,12 @@ namespace nbody
         vk::raii::DescriptorSetLayout make_descriptor_set_layout();
         vk::raii::DescriptorSet make_descriptor_set();
         vk::raii::PipelineLayout make_pipeline_layout();
-        vk::raii::ShaderModule make_shader(const std::string& glsl);
+        vk::raii::ShaderModule make_shader(const unsigned char* spv, size_t size);
+
+        template <size_t size>
+        vk::raii::ShaderModule make_shader(const unsigned char (&spv)[size])
+        { return std::move(make_shader(spv, size)); }
+
         vk::raii::Pipeline make_pipeline(vk::raii::ShaderModule& shader);
 
         template <typename Type>
@@ -131,8 +136,6 @@ namespace nbody
         { return { physical_device, device, sizeof(Type) * num, flags }; }
 
     public:
-
-        static std::vector<uint32_t> glsl_to_spv(const std::string& glsl, const std::string& identifier = "unidentified");
 
         static uint32_t find_memory_type(vk::PhysicalDeviceMemoryProperties const& memoryProperties, uint32_t typeBits, vk::MemoryPropertyFlags requirementsMask);
 

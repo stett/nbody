@@ -5,8 +5,8 @@
 #include <vector>
 #include <array>
 #include "gpu.h"
-#include "shaders.h"
-#include "shaderc/shaderc.hpp"
+#include "shaders/accelerate.h"
+#include "shaders/integrate.h"
 
 using nbody::GpuDevice;
 
@@ -22,8 +22,8 @@ GpuDevice::GpuDevice()
     , descriptor_set_layout(make_descriptor_set_layout())
     , descriptor_set(make_descriptor_set())
     , pipeline_layout(make_pipeline_layout())
-    , shader_integrate(make_shader(glsl_integrate))
-    , shader_accelerate(make_shader(glsl_accelerate))
+    , shader_integrate(make_shader(spv_integrate))
+    , shader_accelerate(make_shader(spv_accelerate))
     , pipeline_integrate(make_pipeline(shader_integrate))
     , pipeline_accelerate(make_pipeline(shader_accelerate))
     , buffer_bodies(make_buffer<Body>(0))
@@ -141,9 +141,12 @@ vk::raii::CommandBuffer GpuDevice::make_command_buffer()
 
 vk::raii::DescriptorPool GpuDevice::make_descriptor_pool()
 {
-    // NOTE: I don't know how to calculate how many of these I actually need...
+    // The pool must cover every descriptor in every set allocated from it. We allocate
+    // one set from the layout below, which has two storage buffer bindings, so we need
+    // two storage buffer descriptors. Under-sizing this fails with ErrorOutOfPoolMemory
+    // on drivers that enforce it (e.g. MoltenVK).
     std::vector<vk::DescriptorPoolSize> pool_sizes = {
-        vk::DescriptorPoolSize(vk::DescriptorType::eStorageBuffer, 1)
+        vk::DescriptorPoolSize(vk::DescriptorType::eStorageBuffer, 2)
     };
     return { device, { { vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet }, 1, pool_sizes } };
 }
@@ -171,10 +174,9 @@ vk::raii::PipelineLayout GpuDevice::make_pipeline_layout()
     return { device, { { }, { *descriptor_set_layout }, push_constant_range } };
 }
 
-vk::raii::ShaderModule GpuDevice::make_shader(const std::string& glsl)
+vk::raii::ShaderModule GpuDevice::make_shader(const unsigned char* spv, size_t size)
 {
-    const std::vector<uint32_t> spv = glsl_to_spv(glsl);
-    return { device, { vk::ShaderModuleCreateFlags(), spv } };
+    return { device, { { }, size, reinterpret_cast<const uint32_t*>(spv) } };
 }
 
 vk::raii::Pipeline GpuDevice::make_pipeline(vk::raii::ShaderModule& shader)
@@ -343,38 +345,6 @@ void nbody::Buffer::read(void* data, const size_t data_size) const
     void* source = memory.mapMemory(0, data_size);
     std::memcpy(data, source, data_size);
     memory.unmapMemory();
-}
-
-std::vector<uint32_t> GpuDevice::glsl_to_spv(const std::string& glsl, const std::string& identifier)
-{
-    // create a shaderc compiler instance & options object
-    shaderc::Compiler compiler;
-    shaderc::CompileOptions options; // todo: set optimization level?
-    options.SetTargetEnvironment(shaderc_target_env_vulkan, shaderc_env_version_vulkan_1_4);
-    options.SetGenerateDebugInfo();
-    options.SetOptimizationLevel(shaderc_optimization_level_zero);
-
-    // compile the glsl
-    shaderc::SpvCompilationResult result = compiler.CompileGlslToSpv(
-        glsl,
-        shaderc_shader_kind::shaderc_glsl_compute_shader,
-        identifier.c_str(),
-        options
-    );
-
-    // Check for compilation errors. This must throw rather than assert: an assert is
-    // compiled out in release (leaving an empty SPIR-V blob and an invalid shader
-    // module), and in a debug build it pops a modal dialog that hangs headless runs.
-    // Throwing lets the caller report the failure and fall back to the CPU path.
-    if (result.GetCompilationStatus() != shaderc_compilation_status_success)
-    {
-        const std::string error = "shader compilation failed (" + identifier + "): " + result.GetErrorMessage();
-        std::cerr << error << std::endl;
-        throw std::runtime_error(error);
-    }
-
-    // Get the SPIR-V code as a vector of uint32_t.
-    return { result.cbegin(), result.cend() };
 }
 
 uint32_t GpuDevice::find_memory_type(

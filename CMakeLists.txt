@@ -20,10 +20,10 @@ target_link_libraries(nbody PUBLIC BS_thread_pool)
 # deliberately no build option here — a missing or unusable device must degrade to a CPU
 # variant, not fail the build.
 message(STATUS "VULKAN_SDK: $ENV{VULKAN_SDK}")
-find_package(Vulkan REQUIRED COMPONENTS shaderc_combined)
+find_package(Vulkan REQUIRED)
 # PRIVATE: no public header includes vulkan (gpu.h lives under source/), so consumers must
 # not inherit the include dirs. nbody is STATIC, so these still propagate for linking.
-target_link_libraries(nbody PRIVATE Vulkan::Vulkan Vulkan::shaderc_combined)
+target_link_libraries(nbody PRIVATE Vulkan::Vulkan)
 target_link_libraries(nbody PUBLIC Vulkan::Headers)
 message(STATUS "Vulkan_VERSION: ${Vulkan_VERSION}")
 
@@ -37,49 +37,84 @@ endif()
 add_subdirectory(tests)
 
 # compile shaders
-#[[
-if (nbody_gpu)
+#
+# Not guarded by a GPU build option: the Vulkan backend is always compiled (see above), so
+# gpu.cpp always #includes the generated shader headers and they must always be generated.
 
-    # Make sure we have the glslc program for compiling shaders
-    find_program(exec_glslc NAMES glslc HINTS Vulkan::glslc)
-    find_program(exec_spirv_opt NAMES spirv-opt HINTS Vulkan::SPIRV-Tools)
-    find_program(exec_glslang_validator NAMES glslangValidator HINTS Vulkan::glslangValidator)
-
-    message("${exec_glslc}")
-    message("${exec_spirv_opt}")
-    message("${exec_glslang_validator}")
-
-    # find shader files to compile to spir-v
-    file(GLOB_RECURSE shader_sources "shader/*.*")
-
-    # create shader output directory
-    set(SHADER_SPV_DIR "${CMAKE_CURRENT_BINARY_DIR}/shader")
-    message("SHADER_SPV_DIR ${SHADER_SPV_DIR}")
-    add_custom_command(
-        TARGET nbody
-        COMMAND ${CMAKE_COMMAND} -E make_directory ${SHADER_SPV_DIR}
-        COMMENT "Creating ${SHADER_SPV_DIR}")
-
-    # loop over each glsl shader
-    foreach(shader_source IN LISTS shader_sources)
-
-        # extract filename & add the .spv extension
-        get_filename_component(filename ${shader_source} NAME)
-        set(filename_spv "${filename}.spv")
-        set(shader_spv "${SHADER_SPV_DIR}/${filename_spv}")
-        message("    ${filename} -> ${filename_spv}")
-
-        # generate the compile command
-        add_custom_command(
-            TARGET nbody
-            MAIN_DEPENDENCY "${shader_source}"
-            DEPENDS "${source} ${shader_includes} ${SHADER_SPV_DIR}"
-            COMMAND "${exec_glslang_validator}" "${shader_source}" -V --target-env vulkan1.4 -I"${CMAKE_CURRENT_SOURCE_DIR}/shaders/include" -o "${shader_spv}"
-            #COMMAND "${exec_spirv_opt}" ${shader_spv} -O --strip-debug -o "${shader_spv}"
-            COMMENT "Compiling shader: ${filename}"
-        )
-
-    endforeach()
-
+# the SPIR-V toolchain ships with the Vulkan SDK, which is already a hard dependency
+find_program(exec_spirv_opt NAMES spirv-opt HINTS Vulkan::SPIRV-Tools)
+find_program(exec_glslang_validator NAMES glslangValidator HINTS Vulkan::glslangValidator)
+if (NOT exec_glslang_validator OR NOT exec_spirv_opt)
+    message(FATAL_ERROR
+        "glslangValidator and spirv-opt are required to build the shaders. "
+        "Both ship with the Vulkan SDK; ensure its Bin directory is on the PATH. "
+        "(VULKAN_SDK: $ENV{VULKAN_SDK})")
 endif()
-#]]
+message(STATUS "glslangValidator: ${exec_glslang_validator}")
+message(STATUS "spirv-opt: ${exec_spirv_opt}")
+
+# find shader stage files to compile to spir-v. only real stage files are
+# listed here; anything under shaders/include is a dependency, not a
+# translation unit of its own.
+file(GLOB_RECURSE shader_sources CONFIGURE_DEPENDS
+    "shaders/*.comp" "shaders/*.vert" "shaders/*.frag"
+    "shaders/*.geom" "shaders/*.tesc" "shaders/*.tese")
+
+# every shader is rebuilt when any shared include changes
+file(GLOB_RECURSE shader_includes CONFIGURE_DEPENDS "shaders/include/*")
+
+# shader output directories. created at configure time so no build step
+# has to depend on their existence.
+set(shader_spv_dir "${CMAKE_CURRENT_BINARY_DIR}/shaders")
+set(shader_h_dir "${CMAKE_CURRENT_SOURCE_DIR}/include/shaders")
+message(STATUS "Shader binary directory: ${shader_spv_dir}")
+message(STATUS "Shader header directory: ${shader_h_dir}")
+file(MAKE_DIRECTORY "${shader_spv_dir}" "${shader_h_dir}")
+
+# loop over each glsl shader
+set(shader_headers "")
+foreach(shader_source IN LISTS shader_sources)
+
+    # extract filename & add the .spv extension.
+    get_filename_component(filename ${shader_source} NAME_WLE)
+    set(filename_spv "${filename}.spv")
+    set(filename_h "${filename}.h")
+    set(shader_spv "${shader_spv_dir}/${filename_spv}")
+    set(shader_h "${shader_h_dir}/${filename_h}")
+    set(shader_c_arr "spv_${filename}")
+    message(STATUS "Shader compilation step: ${filename} -> ${filename_spv} -> ${filename_h} : ${shader_c_arr}")
+
+    # glsl -> spv
+    add_custom_command(
+        OUTPUT "${shader_spv}"
+        MAIN_DEPENDENCY "${shader_source}"
+        DEPENDS ${shader_includes}
+        # the include path is one argument with no embedded quotes: under VERBATIM cmake
+        # escapes quotes inside an argument, so -I"${dir}" would reach glslang with the
+        # quote characters still in the path.
+        COMMAND "${exec_glslang_validator}" "${shader_source}" -V --target-env vulkan1.4 "-I${CMAKE_CURRENT_SOURCE_DIR}/shaders/include" -o "${shader_spv}"
+        COMMAND "${exec_spirv_opt}" "${shader_spv}" -O --strip-debug -o "${shader_spv}"
+        COMMENT "Compiling shader spv: ${filename} -> ${filename_spv}"
+        VERBATIM)
+
+    # spv -> c header, via a cmake script so the build needs no tooling beyond the
+    # Vulkan SDK and cmake itself.
+    add_custom_command(
+        OUTPUT "${shader_h}"
+        DEPENDS "${shader_spv}" "${CMAKE_CURRENT_SOURCE_DIR}/cmake/spv_to_header.cmake"
+        COMMAND "${CMAKE_COMMAND}"
+            -Dspv=${shader_spv} -Dheader=${shader_h} -Dname=${shader_c_arr}
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/spv_to_header.cmake"
+        COMMENT "Embedding shader header ${filename_spv} -> ${filename_h}"
+        VERBATIM)
+
+    list(APPEND shader_headers "${shader_h}")
+
+endforeach()
+
+# gpu.cpp #includes the generated headers, so they must exist before any of
+# nbody's objects compile. a target-level dependency gives that ordering;
+# attaching these steps to nbody as POST_BUILD would deadlock, since the
+# headers would only be generated after the target that needs them links.
+add_custom_target(nbody_shaders DEPENDS ${shader_headers})
+add_dependencies(nbody nbody_shaders)
