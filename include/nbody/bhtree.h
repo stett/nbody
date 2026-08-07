@@ -26,7 +26,7 @@ namespace nbody
         public:
 
             // initialize tree with bounds and a root node
-            explicit Tree(const Bounds& bounds = { .size=1 }) : _nodes{ {.bounds = bounds, .children = 0, .mass = 0, .com = {0, 0, 0}} } { }
+            explicit Tree(const Bounds& bounds = { .size=1 }) : _nodes{ {.bounds = bounds, .com = {0, 0, 0}, .mass = 0, .children = 0 } } { }
 
             // reserve space for at least this many nodes
             void reserve(const size_t max_nodes) { _nodes.reserve(max_nodes); }

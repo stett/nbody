@@ -1,5 +1,6 @@
-#if NBODY_GPU
+#include <algorithm>
 #include <iostream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 #include <array>
@@ -7,10 +8,10 @@
 #include "shaders/accelerate.h"
 #include "shaders/integrate.h"
 
-using nbody::GPU;
+using nbody::GpuDevice;
 
 
-GPU::GPU()
+GpuDevice::GpuDevice()
     : instance(make_instance())
     , physical_device(make_physical_device())
     , device(make_device())
@@ -29,7 +30,43 @@ GPU::GPU()
     , buffer_nodes(make_buffer<bh::Node>(0))
 { }
 
-vk::raii::Instance GPU::make_instance()
+std::string GpuDevice::probe() noexcept
+{
+    try
+    {
+        vk::raii::Context context;
+        vk::ApplicationInfo app_info("nbody", 1, "nbody", 1, VK_API_VERSION_1_4);
+        std::vector<const char*> extensions = { "VK_KHR_portability_enumeration" };
+        vk::raii::Instance instance(
+            context,
+            vk::InstanceCreateInfo(
+                vk::InstanceCreateFlagBits::eEnumeratePortabilityKHR,
+                &app_info,
+                {},
+                extensions));
+
+        vk::raii::PhysicalDevices devices(instance);
+        if (devices.empty())
+            return "no Vulkan physical devices";
+
+        for (const vk::raii::PhysicalDevice& device : devices)
+            for (const vk::QueueFamilyProperties& family : device.getQueueFamilyProperties())
+                if (family.queueFlags & vk::QueueFlagBits::eCompute)
+                    return {};
+
+        return "no Vulkan queue family supports compute";
+    }
+    catch (const std::exception& e)
+    {
+        return e.what();
+    }
+    catch (...)
+    {
+        return "unknown Vulkan error";
+    }
+}
+
+vk::raii::Instance GpuDevice::make_instance()
 {
     // initialize the vk::ApplicationInfo structure
     vk::ApplicationInfo app_info("nbody", 1, "nbody", 1, VK_API_VERSION_1_4);
@@ -47,13 +84,24 @@ vk::raii::Instance GPU::make_instance()
     return { context, instance_create_info };
 }
 
-vk::raii::PhysicalDevice GPU::make_physical_device()
+vk::raii::PhysicalDevice GpuDevice::make_physical_device()
 {
-    // get the first physical device
-    return vk::raii::PhysicalDevices(instance).front();
+    vk::raii::PhysicalDevices devices(instance);
+    if (devices.empty())
+        throw std::runtime_error("no Vulkan physical devices");
+
+    // Pick the first device that can actually run compute rather than simply the first
+    // enumerated one. probe() reports availability if *any* device supports compute, so
+    // taking front() blindly could fail construction on a machine probe called usable.
+    for (vk::raii::PhysicalDevice& device : devices)
+        for (const vk::QueueFamilyProperties& family : device.getQueueFamilyProperties())
+            if (family.queueFlags & vk::QueueFlagBits::eCompute)
+                return device;
+
+    throw std::runtime_error("no Vulkan queue family supports compute");
 }
 
-vk::raii::Device GPU::make_device()
+vk::raii::Device GpuDevice::make_device()
 {
     // find the index of the first queue family that supports compute
     auto queue_family_properties = physical_device.getQueueFamilyProperties();
@@ -63,7 +111,11 @@ vk::raii::Device GPU::make_device()
             queue_family_properties.end(),
             [](vk::QueueFamilyProperties const &qfp)
             { return qfp.queueFlags & vk::QueueFlagBits::eCompute; });
-    assert(compute_queue_family_properties != queue_family_properties.end());
+    // Throw rather than assert: an assert vanishes in release, and this is a
+    // recoverable, reportable condition -- the variant simply becomes unavailable.
+    if (compute_queue_family_properties == queue_family_properties.end())
+        throw std::runtime_error("no Vulkan queue family supports compute");
+
     queue_family_index = static_cast<uint32_t>(std::distance(
         queue_family_properties.begin(),
         compute_queue_family_properties));
@@ -76,18 +128,18 @@ vk::raii::Device GPU::make_device()
     return { physical_device, device_create_info };
 }
 
-vk::raii::CommandPool GPU::make_command_pool()
+vk::raii::CommandPool GpuDevice::make_command_pool()
 {
     return { device, { vk::CommandPoolCreateFlagBits::eResetCommandBuffer, queue_family_index } };
 }
 
-vk::raii::CommandBuffer GPU::make_command_buffer()
+vk::raii::CommandBuffer GpuDevice::make_command_buffer()
 {
     vk::CommandBufferAllocateInfo command_buffer_allocator_info( command_pool, vk::CommandBufferLevel::ePrimary, 1 );
     return std::move(vk::raii::CommandBuffers(device, command_buffer_allocator_info).front());
 }
 
-vk::raii::DescriptorPool GPU::make_descriptor_pool()
+vk::raii::DescriptorPool GpuDevice::make_descriptor_pool()
 {
     // The pool must cover every descriptor in every set allocated from it. We allocate
     // one set from the layout below, which has two storage buffer bindings, so we need
@@ -99,7 +151,7 @@ vk::raii::DescriptorPool GPU::make_descriptor_pool()
     return { device, { { vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet }, 1, pool_sizes } };
 }
 
-vk::raii::DescriptorSetLayout GPU::make_descriptor_set_layout()
+vk::raii::DescriptorSetLayout GpuDevice::make_descriptor_set_layout()
 {
     std::vector<vk::DescriptorSetLayoutBinding> bindings =
     {
@@ -110,24 +162,24 @@ vk::raii::DescriptorSetLayout GPU::make_descriptor_set_layout()
     return { device, { { }, bindings } };
 }
 
-vk::raii::DescriptorSet GPU::make_descriptor_set()
+vk::raii::DescriptorSet GpuDevice::make_descriptor_set()
 {
     vk::DescriptorSetAllocateInfo descriptorSetAllocateInfo(descriptor_pool, *descriptor_set_layout);
     return std::move(vk::raii::DescriptorSets(device, descriptorSetAllocateInfo).front());
 }
 
-vk::raii::PipelineLayout GPU::make_pipeline_layout()
+vk::raii::PipelineLayout GpuDevice::make_pipeline_layout()
 {
     vk::PushConstantRange push_constant_range(vk::ShaderStageFlagBits::eCompute, 0, sizeof(PushConstants));
     return { device, { { }, { *descriptor_set_layout }, push_constant_range } };
 }
 
-vk::raii::ShaderModule GPU::make_shader(const unsigned char* spv, size_t size)
+vk::raii::ShaderModule GpuDevice::make_shader(const unsigned char* spv, size_t size)
 {
     return { device, { { }, size, reinterpret_cast<const uint32_t*>(spv) } };
 }
 
-vk::raii::Pipeline GPU::make_pipeline(vk::raii::ShaderModule& shader)
+vk::raii::Pipeline GpuDevice::make_pipeline(vk::raii::ShaderModule& shader)
 {
     // create the pipeline
     vk::PipelineShaderStageCreateInfo shader_stage_create_info({ }, vk::ShaderStageFlagBits::eCompute, *shader, "main");
@@ -135,7 +187,7 @@ vk::raii::Pipeline GPU::make_pipeline(vk::raii::ShaderModule& shader)
     return { device, nullptr, compute_pipeline_create_info };
 }
 
-void GPU::write(const std::vector<Body>& bodies, const std::vector<bh::Node>& nodes)
+void GpuDevice::write(const std::vector<Body>& bodies, const std::vector<bh::Node>& nodes)
 {
     // update buffers
     buffer_bodies.write(bodies.data(), sizeof(Body) * bodies.size());
@@ -173,17 +225,21 @@ void GPU::write(const std::vector<Body>& bodies, const std::vector<bh::Node>& no
     push_constants.num_nodes = (int)nodes.size();
 }
 
-void GPU::read(std::vector<Body>& bodies)
+void GpuDevice::read(std::vector<Body>& bodies)
 {
-    // map the memory back to the bodies array
-    assert(bodies.size() * sizeof(Body) >= buffer_bodies.size);
-    buffer_bodies.read(bodies.data(), buffer_bodies.size);
+    // Copy back only what both sides can hold. buffer_bodies.size is the allocation,
+    // which only ever grows, so reading that many bytes overruns `bodies` whenever the
+    // body count has shrunk since the buffer was sized.
+    const size_t want = bodies.size() * sizeof(Body);
+    buffer_bodies.read(bodies.data(), std::min<size_t>(want, buffer_bodies.used));
 }
 
-void GPU::integrate(const float dt)
+void GpuDevice::integrate(const float dt, const float size, const bool wrap)
 {
     // update relevant push constants
     push_constants.dt = dt;
+    push_constants.size = size;
+    push_constants.wrap = wrap ? 1 : 0;
 
     // set up command to run the integrate pipeline
     command_buffer.begin({ });
@@ -208,10 +264,11 @@ void GPU::integrate(const float dt)
     assert(result == vk::Result::eSuccess);
 }
 
-void GPU::accelerate(float theta, Mode mode)
+void GpuDevice::accelerate(const float theta, const float gravity, const Mode mode)
 {
     // update relevant push constants
     push_constants.theta = theta;
+    push_constants.G = gravity;   // or set_gravity() would silently not reach the device
     push_constants.mode = mode;
 
     // set up command to run the accelerate pipeline
@@ -259,7 +316,7 @@ void nbody::Buffer::allocate(const size_t _size)
     size = _size;
     if (size == 0) { return; }
     buffer = { device, { { }, size, usage } };
-    memory = GPU::alloc_device_memory(device, physical_device.getMemoryProperties(), buffer.getMemoryRequirements(), properties);
+    memory = GpuDevice::alloc_device_memory(device, physical_device.getMemoryProperties(), buffer.getMemoryRequirements(), properties);
     buffer.bindMemory(memory, 0);
 }
 
@@ -271,21 +328,26 @@ void nbody::Buffer::write(const void* data, const size_t data_size)
         allocate(data_size);
     }
 
+    // track how much of the (possibly larger) allocation is actually live
+    used = data_size;
+    if (used == 0) { return; }
+
     // copy data to gpu mapped memory
-    void* target = memory.mapMemory(0, data_size);
-    memcpy(target, data, data_size);
+    void* target = memory.mapMemory(0, used);
+    memcpy(target, data, used);
     memory.unmapMemory();
 }
 
 void nbody::Buffer::read(void* data, const size_t data_size) const
 {
     assert(data_size <= size);
+    if (data_size == 0) { return; }
     void* source = memory.mapMemory(0, data_size);
     std::memcpy(data, source, data_size);
     memory.unmapMemory();
 }
 
-uint32_t GPU::find_memory_type(
+uint32_t GpuDevice::find_memory_type(
     vk::PhysicalDeviceMemoryProperties const& memoryProperties,
     uint32_t typeBits,
     vk::MemoryPropertyFlags requirementsMask)
@@ -304,7 +366,7 @@ uint32_t GPU::find_memory_type(
     return typeIndex;
 }
 
-vk::raii::DeviceMemory GPU::alloc_device_memory(
+vk::raii::DeviceMemory GpuDevice::alloc_device_memory(
     vk::raii::Device const& device,
     vk::PhysicalDeviceMemoryProperties const& memoryProperties,
     vk::MemoryRequirements const& memoryRequirements,
@@ -314,5 +376,3 @@ vk::raii::DeviceMemory GPU::alloc_device_memory(
     vk::MemoryAllocateInfo memoryAllocateInfo( memoryRequirements.size, memoryTypeIndex );
     return { device, memoryAllocateInfo };
 }
-
-#endif
