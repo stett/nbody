@@ -1,9 +1,6 @@
 // Shared declarations for the compute shaders. Included after #version, so this file
-// deliberately does not declare one.
-//
-// This was previously the `glsl_common` string literal in source/shaders.h, concatenated
-// onto each shader at run time. It is a real include now, so the CMake shader step rebuilds
-// every stage when this file changes.
+// deliberately does not declare one. The CMake shader step rebuilds every stage when it
+// changes.
 #ifndef NBODY_COMMON_GLSL
 #define NBODY_COMMON_GLSL
 

@@ -21,11 +21,9 @@ vec3 accelerate(vec3 body_pos, float body_radius, vec3 node_pos, float node_mass
     // NOTE: this condition no longer needed if we have collisions
     //
     // Must stay identical to nbody::detail::gravity (source/detail/physics.h), including
-    // the non-strict comparison: a source at zero distance is this body itself, radius
-    // defaults to 0, and a strict `delta_sq < radii_sq` is `0 < 0` -- false -- so the
-    // return below would divide by sqrt(0)*0 and poison the sum with NaN. The n^2 loop
-    // passes every body including this one, and the barnes-hut traversal meets this body
-    // as a leaf, so neither can skip self by index.
+    // the non-strict comparison: radius defaults to 0, and neither the n^2 loop nor the
+    // barnes-hut traversal can skip this body by index, so a strict test would divide by
+    // sqrt(0)*0 and give NaN.
     if (delta_sq <= radii_sq)
         return vec3(0);
 

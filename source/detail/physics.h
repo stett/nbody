@@ -25,13 +25,9 @@ namespace nbody::detail
         // If we're too close, don't apply a force.
         // NOTE: this condition no longer needed if we have collisions
         //
-        // The comparison must not be strict. A source at zero distance is the body
-        // itself, or something sitting exactly on top of it, and radius defaults to 0 --
-        // so a strict `delta_sq < radii_sq` is `0 < 0`, which is false, and the return
-        // below divides by sqrt(0)*0 and poisons the whole sum with NaN. Only brute force
-        // can skip self by index; barnes-hut meets the body as a leaf of its own tree and
-        // the GPU shaders have no index to compare, so this is where every caller is
-        // covered.
+        // Must not be strict: radius defaults to 0, so a body at zero distance from
+        // itself would fall through and divide by sqrt(0)*0, giving NaN. Only brute force
+        // can skip self by index, so the zero case is handled here for every caller.
         if (delta_sq <= radii_sq)
             return { 0, 0, 0 };
 

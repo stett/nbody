@@ -15,11 +15,9 @@ namespace nbody
     {
         std::shared_ptr<BS::thread_pool> pool = std::make_shared<BS::thread_pool>();
 
-        // Created on the first successful switch to a GPU variant and cached, so
-        // switching between the two GPU variants does not tear down and rebuild the
-        // device, buffers and pipelines. Both variants share one set of shaders and
-        // select between them with a push constant, so there is nothing per-variant
-        // to rebuild anyway.
+        // Created on the first successful switch to a GPU variant and cached: both GPU
+        // variants share one set of shaders and select between them with a push constant,
+        // so switching has nothing to rebuild.
         std::shared_ptr<GpuDevice> gpu;
 
         // Returns `gpu`, creating it if needed. Throws if the device cannot be brought

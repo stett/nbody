@@ -1,9 +1,7 @@
 # Embed a SPIR-V blob in a C header as a byte array.
 #
-# Run as a build step via `cmake -P`, so the only tool required is CMake itself. This
-# replaces an earlier `xxd -i` step: xxd ships with vim rather than with the Vulkan SDK,
-# and on Windows it generally lives inside the Git installation rather than on the PATH
-# that CMake resolves custom-command executables against.
+# Run as a build step via `cmake -P`, so the build needs no tooling beyond the Vulkan SDK
+# and CMake itself.
 #
 # Usage:
 #   cmake -Dspv=<in.spv> -Dheader=<out.h> -Dname=<identifier> -P spv_to_header.cmake
@@ -57,9 +55,8 @@ string(JOIN "\n" body ${lines})
 
 get_filename_component(spv_name "${spv}" NAME)
 
-# `static` rather than xxd's external definition: these headers are included for their
-# contents, and an external array would collide at link time if two translation units
-# ever included the same one.
+# `static`: an external array would collide at link time if two translation units ever
+# included the same header.
 file(WRITE "${header}"
 "// Generated from ${spv_name} by cmake/spv_to_header.cmake. Do not edit.\n"
 "#pragma once\n"

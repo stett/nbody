@@ -69,11 +69,9 @@ namespace nbody
         // Is there a compute-capable Vulkan device on this machine? Returns an empty
         // string if so, otherwise a human-readable reason. Never throws.
         //
-        // Deliberately cheap: it creates an instance and inspects queue families, but
-        // does not create a logical device, allocate buffers or build pipelines — all of
-        // which are far too slow to pay merely to decide whether to offer a variant in a
-        // menu. Full construction failure is reported separately, when the variant is
-        // first selected.
+        // Deliberately cheap: creates an instance and inspects queue families, but does
+        // not create a logical device, allocate buffers or build pipelines. Full
+        // construction failure is reported separately, when the variant is first selected.
         static std::string probe() noexcept;
 
         void write(const std::vector<Body>& bodies, const std::vector<bh::Node>& nodes);

@@ -28,10 +28,8 @@ namespace nbody
                         Vector acc = { 0, 0, 0 };
                         for (size_t j = 0; j < bodies.size(); ++j)
                         {
-                            // Skip self-interaction. detail::gravity already returns zero
-                            // at zero distance, so this is an optimization rather than a
-                            // correctness guard -- it saves a call per body, and only
-                            // brute force has the index needed to do it.
+                            // Skip self-interaction. detail::gravity returns zero at zero
+                            // distance anyway, so this just saves the call.
                             if (j == i)
                                 continue;
                             acc += detail::gravity(pos, radius, bodies[j].pos, bodies[j].mass, G);

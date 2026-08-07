@@ -217,18 +217,12 @@ TEST_CASE("barnes-hut approximates brute force", "[sim][variant]")
 
 TEST_CASE("every variant tolerates bodies with no radius", "[sim][variant]")
 {
-    // Regression: detail::gravity rejected a source only when it was closer than the
-    // body's own radius, and Body::radius defaults to 0. A body therefore did not reject
-    // *itself* -- `delta_sq < radii_sq` is `0 < 0` -- and the force law divided by
-    // sqrt(0)*0, poisoning every acceleration with NaN on the first step.
+    // Body::radius defaults to 0, and only brute force can skip self by index, so a body
+    // meets itself at zero distance in every other variant. The force law must return
+    // zero there rather than dividing by it and yielding NaN.
     //
-    // Only brute force escaped it, because it skips self by index. Barnes-Hut meets the
-    // body as a leaf of its own tree and the GPU shaders have no index to compare, so
-    // three of the four variants were affected -- including CpuBarnesHut, the one a
-    // default-constructed Sim selects.
-    //
-    // Deliberately does not use util::disk: it assigns a real radius via compute_radius,
-    // which is why the rest of the suite never saw this.
+    // Builds the bodies by hand: util::disk assigns a real radius via compute_radius, so
+    // nothing seeded through it exercises the default.
     size_t tested = 0;
     for (const nbody::VariantInfo& info : nbody::Sim::variants())
     {
@@ -271,11 +265,9 @@ TEST_CASE("every variant tolerates bodies with no radius", "[sim][variant]")
 
 TEST_CASE("every variant steps with no bodies", "[sim][variant]")
 {
-    // Regression: the GPU solvers dispatched regardless of body count. Buffer::allocate()
-    // early-returns at size 0 and leaves a null vk::Buffer, which write() then bound into
-    // a descriptor with range 0 -- VK_NULL_HANDLE plus VUID-VkDescriptorBufferInfo-range-
-    // 00341, and undefined behaviour without the nullDescriptor feature. Reachable from
-    // any caller that steps before spawning, which the demo's reset path does.
+    // Stepping before anything is spawned is reachable -- the demo's reset path does it.
+    // The GPU solvers must not dispatch then: an empty body array binds a null vk::Buffer
+    // with range 0, which is invalid descriptor usage.
     size_t tested = 0;
     for (const nbody::VariantInfo& info : nbody::Sim::variants())
     {
