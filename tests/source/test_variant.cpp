@@ -214,3 +214,87 @@ TEST_CASE("barnes-hut approximates brute force", "[sim][variant]")
     INFO("mean relative acceleration error: " << mean_error);
     REQUIRE(mean_error < 0.05);
 }
+
+TEST_CASE("every variant tolerates bodies with no radius", "[sim][variant]")
+{
+    // Regression: detail::gravity rejected a source only when it was closer than the
+    // body's own radius, and Body::radius defaults to 0. A body therefore did not reject
+    // *itself* -- `delta_sq < radii_sq` is `0 < 0` -- and the force law divided by
+    // sqrt(0)*0, poisoning every acceleration with NaN on the first step.
+    //
+    // Only brute force escaped it, because it skips self by index. Barnes-Hut meets the
+    // body as a leaf of its own tree and the GPU shaders have no index to compare, so
+    // three of the four variants were affected -- including CpuBarnesHut, the one a
+    // default-constructed Sim selects.
+    //
+    // Deliberately does not use util::disk: it assigns a real radius via compute_radius,
+    // which is why the rest of the suite never saw this.
+    size_t tested = 0;
+    for (const nbody::VariantInfo& info : nbody::Sim::variants())
+    {
+        if (!info.available)
+            continue;
+
+        INFO("variant: " << info.name);
+        nbody::Sim sim(info.variant);
+        REQUIRE(sim.variant() == info.variant);
+        ++tested;
+
+        {
+            std::vector<nbody::Body>& bodies = sim.mutable_bodies();
+            bodies.resize(3);
+            bodies[0] = nbody::Body{ .pos = { 0.f, 0.f, 0.f }, .mass = 1000.f };
+            bodies[1] = nbody::Body{ .pos = { 100.f, 0.f, 0.f }, .mass = 1.f };
+            bodies[2] = nbody::Body{ .pos = { 0.f, 100.f, 0.f }, .mass = 1.f };
+            for (const nbody::Body& body : bodies)
+                REQUIRE(body.radius == 0.f);
+        }
+
+        sim.update(1.f / 120.f);
+
+        for (const nbody::Body& body : sim.bodies())
+        {
+            REQUIRE(std::isfinite(body.acc.x));
+            REQUIRE(std::isfinite(body.acc.y));
+            REQUIRE(std::isfinite(body.acc.z));
+            REQUIRE(std::isfinite(body.pos.x));
+            REQUIRE(std::isfinite(body.pos.y));
+            REQUIRE(std::isfinite(body.pos.z));
+        }
+
+        // and the physics still happened: the two orbiting stars are pulled inward
+        REQUIRE(sim.bodies()[1].acc.x < 0.f);
+        REQUIRE(sim.bodies()[2].acc.y < 0.f);
+    }
+    REQUIRE(tested >= 2);
+}
+
+TEST_CASE("every variant steps with no bodies", "[sim][variant]")
+{
+    // Regression: the GPU solvers dispatched regardless of body count. Buffer::allocate()
+    // early-returns at size 0 and leaves a null vk::Buffer, which write() then bound into
+    // a descriptor with range 0 -- VK_NULL_HANDLE plus VUID-VkDescriptorBufferInfo-range-
+    // 00341, and undefined behaviour without the nullDescriptor feature. Reachable from
+    // any caller that steps before spawning, which the demo's reset path does.
+    size_t tested = 0;
+    for (const nbody::VariantInfo& info : nbody::Sim::variants())
+    {
+        if (!info.available)
+            continue;
+
+        INFO("variant: " << info.name);
+        nbody::Sim sim(info.variant);
+        REQUIRE(sim.variant() == info.variant);
+        ++tested;
+
+        REQUIRE(sim.bodies().empty());
+        sim.update(1.f / 120.f);
+        REQUIRE(sim.bodies().empty());
+
+        // and the solver is still usable afterwards
+        seed_disk(sim, 32);
+        sim.update(1.f / 120.f);
+        REQUIRE(sim.bodies().size() == 32);
+    }
+    REQUIRE(tested >= 2);
+}

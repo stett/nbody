@@ -74,6 +74,12 @@ file(GLOB_RECURSE shader_includes CONFIGURE_DEPENDS "shaders/include/*")
 set(shader_spv_dir "${CMAKE_CURRENT_BINARY_DIR}/shaders")
 set(shader_generated_dir "${CMAKE_CURRENT_BINARY_DIR}/generated")
 set(shader_h_dir "${shader_generated_dir}/shaders")
+
+# Sweep up output from before the move. "include" is registered as an include directory
+# above, ahead of the generated directory below, so a leftover include/shaders/<stage>.h
+# from an older build of this checkout would shadow the freshly generated one -- and it
+# would do so silently, compiling a stale shader with no build error.
+file(REMOVE_RECURSE "${CMAKE_CURRENT_SOURCE_DIR}/include/shaders")
 message(STATUS "Shader binary directory: ${shader_spv_dir}")
 message(STATUS "Shader header directory: ${shader_h_dir}")
 file(MAKE_DIRECTORY "${shader_spv_dir}" "${shader_h_dir}")

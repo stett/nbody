@@ -5,7 +5,8 @@
 #include "nbody/vector.h"
 
 // The single host-side definition of the force law and the integrator, shared by every
-// CPU solver and mirrored in GLSL (source/shaders.h). Any change here must be made in
+// CPU solver and mirrored in GLSL (shaders/accelerate.comp and shaders/integrate.comp,
+// over the declarations in shaders/include/common.glsl). Any change here must be made in
 // both places or the CPU and GPU variants will silently disagree.
 namespace nbody::detail
 {
@@ -21,9 +22,17 @@ namespace nbody::detail
         const float delta_sq = delta.size_sq();
         const float radii_sq = radius * radius;
 
-        // if we're too close, don't apply a force
+        // If we're too close, don't apply a force.
         // NOTE: this condition no longer needed if we have collisions
-        if (delta_sq < radii_sq)
+        //
+        // The comparison must not be strict. A source at zero distance is the body
+        // itself, or something sitting exactly on top of it, and radius defaults to 0 --
+        // so a strict `delta_sq < radii_sq` is `0 < 0`, which is false, and the return
+        // below divides by sqrt(0)*0 and poisons the whole sum with NaN. Only brute force
+        // can skip self by index; barnes-hut meets the body as a leaf of its own tree and
+        // the GPU shaders have no index to compare, so this is where every caller is
+        // covered.
+        if (delta_sq <= radii_sq)
             return { 0, 0, 0 };
 
         return G * src_mass * delta / (std::sqrt(delta_sq) * delta_sq);

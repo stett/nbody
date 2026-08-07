@@ -52,6 +52,15 @@ namespace nbody
 
         void accelerate() override
         {
+            // Nothing to dispatch, and dispatching anyway is invalid rather than merely
+            // wasteful: Buffer::allocate() early-returns at size 0 and leaves a null
+            // vk::Buffer, which write() would then bind into a descriptor with range 0.
+            // That is VK_NULL_HANDLE plus VUID-VkDescriptorBufferInfo-range-00341, and
+            // undefined behaviour on any driver without the nullDescriptor feature.
+            // Reachable from a caller that steps before spawning anything.
+            if (_state->bodies.empty())
+                return;
+
             if (_mode == Mode::NLogN)
             {
                 detail::build_tree(_tree, _state->bodies, _state->size);
@@ -71,6 +80,10 @@ namespace nbody
 
         void integrate(const float dt) override
         {
+            // See accelerate(): an empty body array cannot be bound as a descriptor.
+            if (_state->bodies.empty())
+                return;
+
             // Upload first if a caller has mutated the bodies since the last dispatch.
             // Without this, integrate() without a preceding accelerate() would step the
             // device's pre-mutation copy and then materialize() would download the
