@@ -65,11 +65,23 @@ file(GLOB_RECURSE shader_includes CONFIGURE_DEPENDS "shaders/include/*")
 
 # shader output directories. created at configure time so no build step
 # has to depend on their existence.
+#
+# Generated headers go in the build tree, not the source tree. In the source tree they
+# would be shared by every build directory configured against this checkout, so two build
+# trees would clobber each other's shaders; they would also make the source tree
+# unbuildable when read-only, and require a .gitignore entry to keep generated output
+# untracked. Here each build tree gets its own copy.
 set(shader_spv_dir "${CMAKE_CURRENT_BINARY_DIR}/shaders")
-set(shader_h_dir "${CMAKE_CURRENT_SOURCE_DIR}/include/shaders")
+set(shader_generated_dir "${CMAKE_CURRENT_BINARY_DIR}/generated")
+set(shader_h_dir "${shader_generated_dir}/shaders")
 message(STATUS "Shader binary directory: ${shader_spv_dir}")
 message(STATUS "Shader header directory: ${shader_h_dir}")
 file(MAKE_DIRECTORY "${shader_spv_dir}" "${shader_h_dir}")
+
+# PRIVATE: only source/gpu.cpp includes these, as "shaders/<stage>.h". They are an
+# implementation detail of the Vulkan backend, so consumers must not inherit the path --
+# same reasoning as Vulkan::Vulkan above.
+target_include_directories(nbody PRIVATE "${shader_generated_dir}")
 
 # loop over each glsl shader
 set(shader_headers "")
