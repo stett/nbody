@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <cstring>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -120,10 +121,56 @@ vk::raii::Device GpuDevice::make_device()
         queue_family_properties.begin(),
         compute_queue_family_properties));
 
+    // Capture tools delimit their work by frame boundary, which normally means
+    // vkQueuePresentKHR. This instance is compute-only -- make_instance() requests no
+    // surface extension and there is no swapchain anywhere -- so to a tool it appears to
+    // submit work forever without ever completing a frame. Nsight Graphics reports "no
+    // supported graphics API detected" on attach, and a capture request queued against it
+    // waits for a present that never arrives.
+    //
+    // VK_EXT_frame_boundary is the way out: it lets a non-presenting application mark the
+    // end of a frame itself, by chaining a VkFrameBoundaryEXT onto a queue submission (see
+    // integrate()). It is purely advisory, so if the driver does not offer it the only cost
+    // is that the app stays undebuggable by those tools.
+    std::vector<const char*> extensions;
+    frame_boundary_enabled = false;
+    for (const vk::ExtensionProperties& extension : physical_device.enumerateDeviceExtensionProperties())
+    {
+        if (std::strcmp(extension.extensionName.data(), VK_EXT_FRAME_BOUNDARY_EXTENSION_NAME) == 0)
+        {
+            extensions.push_back(VK_EXT_FRAME_BOUNDARY_EXTENSION_NAME);
+            frame_boundary_enabled = true;
+            break;
+        }
+    }
+
+    // Expect the "unavailable" branch in an ordinary run: no driver here implements this,
+    // it arrives with the capture tool's own layer. That layer can only be injected at
+    // process launch, so the extension is present exactly when the app was started from the
+    // tool -- attaching to an already-running process is too late, the device has been
+    // created by then.
+    static bool logged_frame_boundary = false;
+    if (!logged_frame_boundary)
+    {
+        logged_frame_boundary = true;
+        std::cerr
+            << "nbody: VK_EXT_frame_boundary "
+            << (frame_boundary_enabled
+                    ? "available -- marking frame ends so capture tools can delimit a step"
+                    : "unavailable -- expected unless launched from a capture tool")
+            << std::endl;
+    }
+
+    // Enabling the extension is not enough; the feature has to be switched on too, or the
+    // VkFrameBoundaryEXT chained at submit time is ignored.
+    vk::PhysicalDeviceFrameBoundaryFeaturesEXT frame_boundary_features(VK_TRUE);
+
     // create a Device
     float queue_priority = 0.0f;
     vk::DeviceQueueCreateInfo device_queue_create_info({}, queue_family_index, 1, &queue_priority);
-    vk::DeviceCreateInfo device_create_info({}, device_queue_create_info);
+    vk::DeviceCreateInfo device_create_info({}, device_queue_create_info, {}, extensions);
+    if (frame_boundary_enabled)
+        device_create_info.pNext = &frame_boundary_features;
 
     return { physical_device, device_create_info };
 }
@@ -253,12 +300,30 @@ void GpuDevice::integrate(const float dt, const float size, const bool wrap)
     // submit the command and wait for the result
     vk::raii::Fence fence(device, vk::FenceCreateInfo{ });
     vk::raii::Queue queue = device.getQueue(queue_family_index, 0);
-    const vk::SubmitInfo submit_info(
+    vk::SubmitInfo submit_info(
         0, // wait semaphore count
         nullptr, // wait semaphores
         nullptr, // wait destination stage mask flags
         1, // command buffer count
         &*command_buffer);
+
+    // Solver::update() runs accelerate() then integrate(), so this is the last submit of a
+    // simulation step and the natural place to close the frame. A tool capturing between
+    // boundaries therefore sees one whole step: the accelerate dispatch and this one.
+    //
+    // The buffer is named as the frame's output so a tool can report what the frame
+    // produced; imageCount stays 0, since a compute-only frame renders to nothing.
+    vk::FrameBoundaryEXT frame_boundary;
+    frame_boundary.flags = vk::FrameBoundaryFlagBitsEXT::eFrameEnd;
+    frame_boundary.frameID = frame_id;
+    frame_boundary.bufferCount = 1;
+    frame_boundary.pBuffers = &*buffer_bodies.buffer;
+    if (frame_boundary_enabled)
+    {
+        submit_info.pNext = &frame_boundary;
+        ++frame_id;
+    }
+
     queue.submit(submit_info, *fence);
     const vk::Result result = device.waitForFences({ *fence }, VK_TRUE, UINT64_MAX);
     assert(result == vk::Result::eSuccess);

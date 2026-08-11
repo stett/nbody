@@ -103,6 +103,15 @@ namespace nbody
         // cached vk data
         uint32_t queue_family_index;
 
+        // Whether the device came up with VK_EXT_frame_boundary. Assigned by make_device()
+        // and so, like queue_family_index, deliberately left without a default member
+        // initializer: those run after the member init list and would clobber it.
+        bool frame_boundary_enabled;
+
+        // Labels each frame-end submit so a capture tool can tell the steps apart. Not
+        // touched by make_device(), so a default initializer is safe here.
+        uint64_t frame_id = 0;
+
         // constant values for shaders
         PushConstants push_constants;
 
