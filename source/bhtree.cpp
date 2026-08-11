@@ -4,6 +4,13 @@
 using nbody::bh::Node;
 using nbody::bh::Tree;
 
+void Tree::reserve(const size_t max_nodes)
+{
+    NBODY_PROFILE_ZONE();
+
+    _nodes.reserve(max_nodes);
+}
+
 void Tree::insert(const Vector& position, const float mass)
 {
     uint32_t node_index = 0;
@@ -79,6 +86,8 @@ void Tree::insert(const Vector& position, const float mass)
 
 void Tree::accumulate(const uint32_t node_index, const Vector& position, const float mass)
 {
+    NBODY_PROFILE_ZONE();
+
     const Vector node_position = _nodes[node_index].com;
     const float node_mass = _nodes[node_index].mass;
     const float total_mass = mass + node_mass;
@@ -89,6 +98,8 @@ void Tree::accumulate(const uint32_t node_index, const Vector& position, const f
 
 void Tree::apply(const Vector& pos, const std::function<void(const Node& node)>& func, const float theta) const
 {
+    NBODY_PROFILE_ZONE();
+
     const float theta_sq = theta * theta;
 
     uint32_t node_index = 0;
@@ -130,6 +141,8 @@ void Tree::apply(const Vector& pos, const std::function<void(const Node& node)>&
 
 void Tree::clear(const Bounds& new_bounds)
 {
+    NBODY_PROFILE_ZONE();
+
     _nodes.clear();
     _nodes.push_back({ new_bounds });
 }

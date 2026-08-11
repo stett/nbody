@@ -16,8 +16,11 @@ namespace nbody::detail
         NBODY_PROFILE_ZONE();
         tree.clear({ .size = size });
         tree.reserve(bodies.size() << 2);
-        for (const Body& body : bodies)
-            tree.insert(body.pos, body.mass);
+        {
+            NBODY_PROFILE_ZONE_NAMED("Insert bodies");
+            for (const Body& body : bodies)
+                tree.insert(body.pos, body.mass);
+        }
 
         // Plotted rather than zoned: the interesting thing about the node count is how it
         // tracks cost over time, not how long counting it took.
