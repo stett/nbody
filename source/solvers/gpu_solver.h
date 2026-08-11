@@ -50,6 +50,25 @@ namespace nbody
             _host_dirty = true;
         }
 
+        // Both halves of a step in one submission. The base implementation would call
+        // accelerate() then integrate(), which submits twice and blocks the host in
+        // between; GpuDevice::step() orders the two with a barrier instead, so the device
+        // is never left idle waiting to be handed the second dispatch.
+        void update(const float dt) override
+        {
+            // See accelerate(): an empty body array cannot be bound as a descriptor.
+            if (_state->bodies.empty())
+                return;
+
+            build_or_clear_tree();
+            upload();
+            _gpu->step(dt, _state->theta, _state->gravity, _mode, _state->size, _state->wrap);
+            _device_dirty = true;
+
+            // Publish every step, as integrate() does.
+            materialize();
+        }
+
         void accelerate() override
         {
             // An empty body array cannot be bound: Buffer::allocate() leaves a null
@@ -59,18 +78,7 @@ namespace nbody
             if (_state->bodies.empty())
                 return;
 
-            if (_mode == Mode::NLogN)
-            {
-                detail::build_tree(_tree, _state->bodies, _state->size);
-            }
-            else
-            {
-                // The N^2 shader never reads the node buffer, but write() binds it
-                // regardless and a zero-sized allocation leaves a null vk::Buffer, so
-                // keep a root-only tree to bind against.
-                _tree.clear({ .size = _state->size });
-            }
-
+            build_or_clear_tree();
             upload();
             _gpu->accelerate(_state->theta, _state->gravity, _mode);
             _device_dirty = true;
@@ -106,6 +114,22 @@ namespace nbody
         }
 
     private:
+
+        // Bring _tree in line with the current bodies, ready to be bound for a dispatch.
+        void build_or_clear_tree()
+        {
+            if (_mode == Mode::NLogN)
+            {
+                detail::build_tree(_tree, _state->bodies, _state->size);
+            }
+            else
+            {
+                // The N^2 shader never reads the node buffer, but write() binds it
+                // regardless and a zero-sized allocation leaves a null vk::Buffer, so
+                // keep a root-only tree to bind against.
+                _tree.clear({ .size = _state->size });
+            }
+        }
 
         // Push the canonical State into this solver's representation. Today the device
         // layout already matches Body so this is a straight upload; a solver with a

@@ -31,6 +31,21 @@ message(STATUS "Vulkan_VERSION: ${Vulkan_VERSION}")
 target_compile_features(nbody PRIVATE cxx_std_20)
 if (MSVC)
     set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /MD")
+
+    # Let the force law compile to the instructions the hardware actually has.
+    #
+    # x86-64 only guarantees SSE2, so that is all MSVC assumes without being told, and SSE2
+    # has no fused multiply-add. /arch:AVX2 raises the assumption to hardware from 2013
+    # onward, which does. /fp:contract is then what permits the fusion: MSVC's default
+    # /fp:precise rounds every operation separately and forbids it, so the flag alone would
+    # buy wider registers and still leave every a*b+c as two instructions.
+    #
+    # Both are needed to reach what an arm64 build gets for free, ARMv8 having made NEON and
+    # its fused multiply-add mandatory rather than optional.
+    #
+    # Applied through a generator expression rather than CMAKE_CXX_FLAGS_RELEASE because the
+    # usual build here is RelWithDebInfo, which that variable does not reach.
+    target_compile_options(nbody PRIVATE $<$<NOT:$<CONFIG:Debug>>:/arch:AVX2 /fp:contract>)
 endif()
 
 # add nbody test suite

@@ -39,20 +39,31 @@ namespace nbody
         vk::raii::Buffer buffer;
         vk::raii::DeviceMemory memory;
 
+        // Persistent mapping of `memory`, established by allocate() and valid whenever
+        // `size` is non-zero. Null for an empty allocation, and for device-local memory
+        // that was never host-visible in the first place -- write() and read() are only
+        // meaningful on a staging buffer.
+        void* mapped = nullptr;
+
         Buffer(
             vk::raii::PhysicalDevice& physical_device,
             vk::raii::Device& device,
             vk::DeviceSize size,
             vk::BufferUsageFlags usage,
-            vk::MemoryPropertyFlags properties = vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+            vk::MemoryPropertyFlags properties);
 
         // allocate gpu memory
         void allocate(size_t size);
 
-        // copy data to the buffer, potentially resizing
+        // Grow to hold `bytes` and record that many as live, without touching the contents.
+        // For a device-local buffer, whose storage is only ever filled by a transfer, this
+        // is the whole of what sizing means.
+        void reserve(size_t bytes);
+
+        // copy data to the buffer, potentially resizing. requires host-visible memory
         void write(const void* data, size_t data_size);
 
-        // copy data from the buffer
+        // copy data from the buffer. requires host-visible memory
         void read(void* data, size_t data_size) const;
     };
 
@@ -79,6 +90,11 @@ namespace nbody
         void integrate(float dt, float size, bool wrap);
         void accelerate(float theta, float gravity, Mode mode);
 
+        // Accelerate and integrate in a single submission, ordered by a pipeline barrier.
+        // Equivalent to accelerate() followed by integrate(), but without the host round
+        // trip between them; prefer it whenever both halves are wanted.
+        void step(float dt, float theta, float gravity, Mode mode, float size, bool wrap);
+
     private:
 
         // RAII vk objects
@@ -86,9 +102,15 @@ namespace nbody
         vk::raii::Instance instance;
         vk::raii::PhysicalDevice physical_device;
         vk::raii::Device device;
+
+        // The queue and the fence are the same objects every submission, so they are held
+        // rather than built per dispatch. Initialized after `device` and so able to use the
+        // queue_family_index that make_device() resolves.
+        vk::raii::Queue queue;
+        vk::raii::Fence fence;
+
         vk::raii::CommandPool command_pool;
         vk::raii::CommandBuffer command_buffer;
-        vk::raii::Semaphore semaphore;
         vk::raii::DescriptorPool descriptor_pool;
         vk::raii::DescriptorSetLayout descriptor_set_layout;
         vk::raii::DescriptorSet descriptor_set;
@@ -97,11 +119,28 @@ namespace nbody
         vk::raii::ShaderModule shader_accelerate;
         vk::raii::Pipeline pipeline_integrate;
         vk::raii::Pipeline pipeline_accelerate;
+        // The buffers the shaders read are device-local and not mappable. The host reaches
+        // them only through the staging pair, which the command buffer copies to and from.
         nbody::Buffer buffer_bodies;
         nbody::Buffer buffer_nodes;
+        nbody::Buffer staging_bodies;
+        nbody::Buffer staging_nodes;
+
+        // Set by write(), consumed by the next command buffer: staging holds bodies the
+        // device buffers have not been given yet.
+        bool upload_pending = false;
 
         // cached vk data
         uint32_t queue_family_index;
+
+        // Whether the device came up with VK_EXT_frame_boundary. Assigned by make_device()
+        // and so, like queue_family_index, deliberately left without a default member
+        // initializer: those run after the member init list and would clobber it.
+        bool frame_boundary_enabled;
+
+        // Labels each frame-end submit so a capture tool can tell the steps apart. Not
+        // touched by make_device(), so a default initializer is safe here.
+        uint64_t frame_id = 0;
 
         // constant values for shaders
         PushConstants push_constants;
@@ -124,14 +163,43 @@ namespace nbody
 
         vk::raii::Pipeline make_pipeline(vk::raii::ShaderModule& shader);
 
+        // command buffer recording and submission
+        void record_dispatch(vk::raii::Pipeline& pipeline);
+        void record_dispatch_barrier();
+        void record_upload();
+        void record_readback();
+        void submit_and_wait(bool frame_end);
+        void set_accelerate_constants(float theta, float gravity, Mode mode);
+        void set_integrate_constants(float dt, float size, bool wrap);
+
+        // Storage the shaders bind. Device-local and not host-visible, so it comes from the
+        // full VRAM heap rather than the small mappable window, and shader reads never
+        // cross the bus.
         template <typename Type>
-        nbody::Buffer make_buffer(
-            uint32_t num,
-            vk::BufferUsageFlags flags =
+        nbody::Buffer make_device_buffer(uint32_t num)
+        {
+            return {
+                physical_device, device, sizeof(Type) * num,
                 vk::BufferUsageFlagBits::eStorageBuffer |
                 vk::BufferUsageFlagBits::eTransferSrc |
-                vk::BufferUsageFlagBits::eTransferDst)
-        { return { physical_device, device, sizeof(Type) * num, flags }; }
+                vk::BufferUsageFlagBits::eTransferDst,
+                vk::MemoryPropertyFlagBits::eDeviceLocal };
+        }
+
+        // The host's side of a transfer. Asking for HOST_CACHED is what keeps this in
+        // system memory and, more to the point, makes it readable at a sensible speed:
+        // reading back through an uncached mapping is punishingly slow.
+        template <typename Type>
+        nbody::Buffer make_staging_buffer(uint32_t num)
+        {
+            return {
+                physical_device, device, sizeof(Type) * num,
+                vk::BufferUsageFlagBits::eTransferSrc |
+                vk::BufferUsageFlagBits::eTransferDst,
+                vk::MemoryPropertyFlagBits::eHostVisible |
+                vk::MemoryPropertyFlagBits::eHostCoherent |
+                vk::MemoryPropertyFlagBits::eHostCached };
+        }
 
     public:
 
