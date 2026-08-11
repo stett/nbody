@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <stdexcept>
@@ -10,6 +11,62 @@
 #include "shaders/integrate.h"
 
 using nbody::GpuDevice;
+
+namespace
+{
+    // Opt-in vulkan diagnostics, off unless NBODY_VK_VERBOSE is set. Nothing here is needed
+    // in a normal run, and only the presence of a value is checked, so any value will do.
+    bool vulkan_verbose()
+    {
+        static const bool verbose = std::getenv("NBODY_VK_VERBOSE") != nullptr;
+        return verbose;
+    }
+
+    // Report which tools have inserted themselves into this device, and whether the one
+    // extension we want from them came with it.
+    //
+    // Worth having because the failure is otherwise mute: a capture tool that attached with
+    // the wrong layer looks exactly like one that did not attach at all, and neither says so.
+    // vkGetPhysicalDeviceToolProperties tells them apart -- an interception layer is
+    // obliged to name itself here, so an empty list means nothing hooked the process, while
+    // a populated list without VK_EXT_frame_boundary means something did but not the layer
+    // that provides it.
+    void log_attached_tools_once(const vk::raii::PhysicalDevice& physical_device, const bool frame_boundary)
+    {
+        if (!vulkan_verbose()) { return; }
+
+        static bool logged = false;
+        if (logged) { return; }
+        logged = true;
+
+        try
+        {
+            const std::vector<vk::PhysicalDeviceToolProperties> tools = physical_device.getToolProperties();
+            if (tools.empty())
+            {
+                std::cerr << "nbody: no vulkan tools attached to this device" << std::endl;
+            }
+            else
+            {
+                std::cerr << "nbody: vulkan tools attached:" << std::endl;
+                for (const vk::PhysicalDeviceToolProperties& tool : tools)
+                    std::cerr
+                        << "nbody:   " << tool.name.data()
+                        << " " << tool.version.data()
+                        << " -- " << tool.description.data() << std::endl;
+            }
+        }
+        catch (const vk::SystemError& e)
+        {
+            std::cerr << "nbody: could not query vulkan tool properties: " << e.what() << std::endl;
+        }
+
+        std::cerr
+            << "nbody: VK_EXT_frame_boundary "
+            << (frame_boundary ? "present" : "absent -- only the capture layer provides it")
+            << std::endl;
+    }
+}
 
 
 GpuDevice::GpuDevice()
@@ -155,6 +212,8 @@ vk::raii::Device GpuDevice::make_device()
             << "nbody: VK_EXT_frame_boundary available -- marking frame ends for capture"
             << std::endl;
     }
+
+    log_attached_tools_once(physical_device, frame_boundary_enabled);
 
     // Enabling the extension is not enough; the feature has to be switched on too, or the
     // VkFrameBoundaryEXT chained at submit time is ignored.
