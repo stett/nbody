@@ -39,6 +39,10 @@ namespace nbody
         vk::raii::Buffer buffer;
         vk::raii::DeviceMemory memory;
 
+        // Persistent mapping of `memory`, established by allocate() and valid whenever
+        // `size` is non-zero. Null only for an empty allocation.
+        void* mapped = nullptr;
+
         Buffer(
             vk::raii::PhysicalDevice& physical_device,
             vk::raii::Device& device,

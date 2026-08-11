@@ -433,10 +433,25 @@ nbody::Buffer::Buffer(
 void nbody::Buffer::allocate(const size_t _size)
 {
     size = _size;
+
+    // The previous mapping belonged to the memory object replaced below, so drop it before
+    // anything can observe it pointing into a freed allocation.
+    mapped = nullptr;
+
     if (size == 0) { return; }
     buffer = { device, { { }, size, usage } };
     memory = GpuDevice::alloc_device_memory(device, physical_device.getMemoryProperties(), buffer.getMemoryRequirements(), properties);
     buffer.bindMemory(memory, 0);
+
+    // Map once and keep it for as long as the allocation lives. vkMapMemory is not a
+    // pointer handout: the driver reserves address space and populates page tables, work
+    // proportional to the size of the allocation. Mapping per access paid that on every
+    // buffer on every frame. Vulkan explicitly permits a mapping to persist, and nothing
+    // here benefits from letting it lapse.
+    //
+    // No flush or invalidate accompanies the copies below because the memory is coherent;
+    // alloc_device_memory only ever returns host-visible memory that is also host-coherent.
+    mapped = memory.mapMemory(0, size);
 }
 
 void nbody::Buffer::write(const void* data, const size_t data_size)
@@ -451,19 +466,14 @@ void nbody::Buffer::write(const void* data, const size_t data_size)
     used = data_size;
     if (used == 0) { return; }
 
-    // copy data to gpu mapped memory
-    void* target = memory.mapMemory(0, used);
-    memcpy(target, data, used);
-    memory.unmapMemory();
+    memcpy(mapped, data, used);
 }
 
 void nbody::Buffer::read(void* data, const size_t data_size) const
 {
     assert(data_size <= size);
     if (data_size == 0) { return; }
-    void* source = memory.mapMemory(0, data_size);
-    std::memcpy(data, source, data_size);
-    memory.unmapMemory();
+    std::memcpy(data, mapped, data_size);
 }
 
 namespace
