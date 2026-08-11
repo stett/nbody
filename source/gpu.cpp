@@ -144,20 +144,15 @@ vk::raii::Device GpuDevice::make_device()
         }
     }
 
-    // Expect the "unavailable" branch in an ordinary run: no driver here implements this,
-    // it arrives with the capture tool's own layer. That layer can only be injected at
-    // process launch, so the extension is present exactly when the app was started from the
-    // tool -- attaching to an already-running process is too late, the device has been
-    // created by then.
+    // Absence is the normal case and says nothing is wrong, so it goes unremarked: no
+    // driver implements this, it arrives with the capture tool's own layer. Announce only
+    // the presence, which confirms the tool's layer took hold and frames will be marked.
     static bool logged_frame_boundary = false;
-    if (!logged_frame_boundary)
+    if (frame_boundary_enabled && !logged_frame_boundary)
     {
         logged_frame_boundary = true;
         std::cerr
-            << "nbody: VK_EXT_frame_boundary "
-            << (frame_boundary_enabled
-                    ? "available -- marking frame ends so capture tools can delimit a step"
-                    : "unavailable -- expected unless launched from a capture tool")
+            << "nbody: VK_EXT_frame_boundary available -- marking frame ends for capture"
             << std::endl;
     }
 
