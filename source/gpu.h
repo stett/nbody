@@ -44,7 +44,7 @@ namespace nbody
             vk::raii::Device& device,
             vk::DeviceSize size,
             vk::BufferUsageFlags usage,
-            vk::MemoryPropertyFlags properties = vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+            vk::MemoryPropertyFlags properties = vk::MemoryPropertyFlagBits::eDeviceLocal | vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
 
         // allocate gpu memory
         void allocate(size_t size);

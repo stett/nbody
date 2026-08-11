@@ -347,22 +347,69 @@ void nbody::Buffer::read(void* data, const size_t data_size) const
     memory.unmapMemory();
 }
 
+namespace
+{
+    // Sentinel for "no memory type satisfies this mask". Distinct from any real index.
+    constexpr uint32_t no_memory_type = uint32_t( ~0 );
+
+    // Like find_memory_type, but reports failure instead of asserting -- alloc_device_memory
+    // deliberately asks for a mask it may not get and falls back.
+    uint32_t try_find_memory_type(
+        vk::PhysicalDeviceMemoryProperties const& memoryProperties,
+        uint32_t typeBits,
+        vk::MemoryPropertyFlags requirementsMask)
+    {
+        for ( uint32_t i = 0; i < memoryProperties.memoryTypeCount; i++ )
+        {
+            if ( ( typeBits & 1 ) && ( ( memoryProperties.memoryTypes[i].propertyFlags & requirementsMask ) == requirementsMask ) )
+                return i;
+            typeBits >>= 1;
+        }
+        return no_memory_type;
+    }
+
+    // Decode only the flags that matter for placement. Avoids vk::to_string, which moved
+    // headers between SDK versions.
+    std::string describe_memory_flags(const vk::MemoryPropertyFlags flags)
+    {
+        std::string out;
+        const auto add = [&out](const char* name) { if (!out.empty()) out += '|'; out += name; };
+        if (flags & vk::MemoryPropertyFlagBits::eDeviceLocal)  add("DEVICE_LOCAL");
+        if (flags & vk::MemoryPropertyFlagBits::eHostVisible)  add("HOST_VISIBLE");
+        if (flags & vk::MemoryPropertyFlagBits::eHostCoherent) add("HOST_COHERENT");
+        if (flags & vk::MemoryPropertyFlagBits::eHostCached)   add("HOST_CACHED");
+        return out.empty() ? "none" : out;
+    }
+
+    // Dump the memory type table the first time we allocate. Where the storage buffers land
+    // decides whether the barnes-hut traversal reads from VRAM or across PCIe, and that is
+    // not visible from any external profiler on this app (the vulkan instance is
+    // compute-only and never presents, so the frame-based tools have nothing to hook).
+    void log_memory_types_once(vk::PhysicalDeviceMemoryProperties const& memoryProperties)
+    {
+        static bool logged = false;
+        if (logged) { return; }
+        logged = true;
+
+        std::cerr << "nbody: vulkan memory types:" << std::endl;
+        for (uint32_t i = 0; i < memoryProperties.memoryTypeCount; ++i)
+        {
+            const vk::MemoryType& type = memoryProperties.memoryTypes[i];
+            std::cerr
+                << "nbody:   [" << i << "] heap " << type.heapIndex
+                << " (" << (memoryProperties.memoryHeaps[type.heapIndex].size >> 20) << " MiB) "
+                << describe_memory_flags(type.propertyFlags) << std::endl;
+        }
+    }
+}
+
 uint32_t GpuDevice::find_memory_type(
     vk::PhysicalDeviceMemoryProperties const& memoryProperties,
     uint32_t typeBits,
     vk::MemoryPropertyFlags requirementsMask)
 {
-    uint32_t typeIndex = uint32_t( ~0 );
-    for ( uint32_t i = 0; i < memoryProperties.memoryTypeCount; i++ )
-    {
-        if ( ( typeBits & 1 ) && ( ( memoryProperties.memoryTypes[i].propertyFlags & requirementsMask ) == requirementsMask ) )
-        {
-            typeIndex = i;
-            break;
-        }
-        typeBits >>= 1;
-    }
-    assert( typeIndex != uint32_t( ~0 ) );
+    const uint32_t typeIndex = try_find_memory_type( memoryProperties, typeBits, requirementsMask );
+    assert( typeIndex != no_memory_type );
     return typeIndex;
 }
 
@@ -372,7 +419,63 @@ vk::raii::DeviceMemory GpuDevice::alloc_device_memory(
     vk::MemoryRequirements const& memoryRequirements,
     vk::MemoryPropertyFlags memoryPropertyFlags)
 {
-    uint32_t memoryTypeIndex = find_memory_type( memoryProperties, memoryRequirements.memoryTypeBits, memoryPropertyFlags );
-    vk::MemoryAllocateInfo memoryAllocateInfo( memoryRequirements.size, memoryTypeIndex );
-    return { device, memoryAllocateInfo };
+    // Prefer memory that is device-local *and* mappable (the BAR window; the whole of VRAM
+    // when resizable BAR is on). The buffers are read by every shader invocation and the
+    // barnes-hut traversal in particular is a divergent, latency-bound pointer chase --
+    // serving those reads from system RAM over PCIe costs far more than the brute-force
+    // path, whose warp-uniform sequential sweep both coalesces and caches.
+    //
+    // find_memory_type takes the first type satisfying the mask, and on discrete NVIDIA the
+    // plain HOST_VISIBLE|HOST_COHERENT system-memory type is enumerated before the
+    // device-local one, so asking for the base mask alone reliably lands in system RAM.
+    //
+    // Fall back when there is no such type, or when the request does not fit the BAR heap:
+    // pre-resizable-BAR parts expose only 256MB there, and overflowing it fails allocation.
+    // Callers map this memory, so the fallback must stay host-visible.
+    log_memory_types_once( memoryProperties );
+
+    // For a mappable request, treat eDeviceLocal as a preference rather than a requirement:
+    // ask for it, but keep a host-visible-only mask to retreat to. Requiring it in the
+    // fallback too would defeat the point, since the BAR type is the only one that has both
+    // and it is exactly the one that just failed.
+    const bool mappable = bool( memoryPropertyFlags & vk::MemoryPropertyFlagBits::eHostVisible );
+    const vk::MemoryPropertyFlags fallback_flags = mappable
+        ? ( memoryPropertyFlags & ~vk::MemoryPropertyFlags( vk::MemoryPropertyFlagBits::eDeviceLocal ) )
+        : memoryPropertyFlags;
+
+    const uint32_t fallback = find_memory_type( memoryProperties, memoryRequirements.memoryTypeBits, fallback_flags );
+    uint32_t preferred = no_memory_type;
+    if ( mappable )
+    {
+        preferred = try_find_memory_type(
+            memoryProperties,
+            memoryRequirements.memoryTypeBits,
+            fallback_flags | vk::MemoryPropertyFlagBits::eDeviceLocal );
+
+        // The heap size is an upper bound, not the free space -- the other buffer is already
+        // resident, and a grow holds both the old and new allocation at once. Screening on it
+        // avoids the obviously-hopeless request; the try/catch below covers the rest.
+        if ( preferred != no_memory_type &&
+             memoryRequirements.size > memoryProperties.memoryHeaps[memoryProperties.memoryTypes[preferred].heapIndex].size )
+            preferred = no_memory_type;
+    }
+
+    if ( preferred != no_memory_type && preferred != fallback )
+    {
+        try
+        {
+            return { device, vk::MemoryAllocateInfo( memoryRequirements.size, preferred ) };
+        }
+        catch ( const vk::SystemError& )
+        {
+            // A small BAR window fills up long before VRAM does. Losing device-local
+            // placement costs performance; failing the allocation would cost the frame.
+            std::cerr
+                << "nbody: device-local BAR allocation of " << ( memoryRequirements.size >> 20 )
+                << " MiB failed, falling back to host memory (shader reads will cross PCIe)"
+                << std::endl;
+        }
+    }
+
+    return { device, vk::MemoryAllocateInfo( memoryRequirements.size, fallback ) };
 }
