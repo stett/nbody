@@ -1,7 +1,15 @@
 #include "nbody/bhtree.h"
+#include "nbody/profile.h"
 
 using nbody::bh::Node;
 using nbody::bh::Tree;
+
+void Tree::reserve(const size_t max_nodes)
+{
+    NBODY_PROFILE_ZONE();
+
+    _nodes.reserve(max_nodes);
+}
 
 void Tree::insert(const Vector& position, const float mass)
 {
@@ -88,6 +96,8 @@ void Tree::accumulate(const uint32_t node_index, const Vector& position, const f
 
 void Tree::apply(const Vector& pos, const std::function<void(const Node& node)>& func, const float theta) const
 {
+    NBODY_PROFILE_ZONE();
+
     const float theta_sq = theta * theta;
 
     uint32_t node_index = 0;
@@ -129,6 +139,8 @@ void Tree::apply(const Vector& pos, const std::function<void(const Node& node)>&
 
 void Tree::clear(const Bounds& new_bounds)
 {
+    NBODY_PROFILE_ZONE();
+
     _nodes.clear();
     _nodes.push_back({ new_bounds });
 }
@@ -140,6 +152,9 @@ void Tree::clear()
 
 void Tree::query(const Ray& ray, const std::function<bool(const Node&)>& visitor) const
 {
+    // Once per picking ray. insert(), accumulate() and apply() run per body or per node
+    // visited, so they are left uninstrumented.
+    NBODY_PROFILE_ZONE();
     uint32_t node_index = 0;
     do
     {

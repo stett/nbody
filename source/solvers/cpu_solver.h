@@ -3,6 +3,7 @@
 #include "solver.h"
 #include "detail/parallel.h"
 #include "detail/physics.h"
+#include "nbody/profile.h"
 
 namespace nbody
 {
@@ -27,11 +28,14 @@ namespace nbody
 
         void integrate(const float dt) override
         {
+            NBODY_PROFILE_ZONE();
             const float size = _state->size;
             const bool wrap = _state->wrap;
             detail::parallel_blocks(*_context->pool, _state->bodies.size(),
                 [this, dt, size, wrap](const size_t begin, const size_t end)
                 {
+                    // Inside the block, so each worker's share shows on its own thread.
+                    NBODY_PROFILE_ZONE_NAMED("integrate block");
                     for (size_t i = begin; i < end; ++i)
                         detail::integrate_euler(_state->bodies[i], dt, size, wrap);
                 });

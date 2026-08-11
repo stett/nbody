@@ -3,6 +3,11 @@ project(nbody)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Opt-in: with these off the tracy client is never configured and the macros expand to
+# nothing. Separate options because the profiler fetches its dependencies while configuring.
+option(NBODY_TRACY "Instrument with the Tracy profiler" OFF)
+option(NBODY_TRACY_PROFILER "Build the Tracy profiler application as a target" OFF)
+
 # add dependencies
 add_subdirectory(external)
 
@@ -13,6 +18,12 @@ add_library(nbody STATIC ${sources})
 # link external libraries
 target_include_directories(nbody PUBLIC "include" "source")
 target_link_libraries(nbody PUBLIC BS_thread_pool)
+
+# PUBLIC: profile.h is a public header, so embedders need both the client and the switch.
+if (NBODY_TRACY)
+    target_link_libraries(nbody PUBLIC Tracy::TracyClient)
+    target_compile_definitions(nbody PUBLIC NBODY_PROFILE)
+endif()
 
 # GPU support is a build-time dependency but a *run-time* capability: the Vulkan backend
 # is always compiled, and whether a usable compute device actually exists is discovered at

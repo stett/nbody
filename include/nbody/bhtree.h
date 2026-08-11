@@ -29,7 +29,7 @@ namespace nbody
             explicit Tree(const Bounds& bounds = { .size=1 }) : _nodes{ {.bounds = bounds, .com = {0, 0, 0}, .mass = 0, .children = 0 } } { }
 
             // reserve space for at least this many nodes
-            void reserve(const size_t max_nodes) { _nodes.reserve(max_nodes); }
+            void reserve(const size_t max_nodes);
 
             // insert a point mass into the tree
             void insert(const Vector& position, const float mass);

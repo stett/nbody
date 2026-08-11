@@ -1,6 +1,7 @@
 #pragma once
 #include "solvers/cpu_solver.h"
 #include "detail/tree.h"
+#include "nbody/profile.h"
 
 namespace nbody
 {
@@ -20,6 +21,7 @@ namespace nbody
 
         void accelerate() override
         {
+            NBODY_PROFILE_ZONE();
             detail::build_tree(_tree, _state->bodies, _state->size);
 
             const float theta = _state->theta;
@@ -27,6 +29,8 @@ namespace nbody
             detail::parallel_blocks(*_context->pool, _state->bodies.size(),
                 [this, theta, G](const size_t begin, const size_t end)
                 {
+                    // Not zoned per traversal: hundreds of node visits per body.
+                    NBODY_PROFILE_ZONE_NAMED("barnes-hut block");
                     for (size_t i = begin; i < end; ++i)
                     {
                         Body& body = _state->bodies[i];

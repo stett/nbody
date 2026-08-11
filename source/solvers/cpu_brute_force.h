@@ -1,5 +1,6 @@
 #pragma once
 #include "solvers/cpu_solver.h"
+#include "nbody/profile.h"
 
 namespace nbody
 {
@@ -15,11 +16,13 @@ namespace nbody
 
         void accelerate() override
         {
+            NBODY_PROFILE_ZONE();
             const float G = _state->gravity;
             const std::vector<Body>& bodies = _state->bodies;
             detail::parallel_blocks(*_context->pool, bodies.size(),
                 [this, G, &bodies](const size_t begin, const size_t end)
                 {
+                    NBODY_PROFILE_ZONE_NAMED("brute force block");
                     for (size_t i = begin; i < end; ++i)
                     {
                         Body& body = _state->bodies[i];
