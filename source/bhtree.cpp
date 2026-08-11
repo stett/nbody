@@ -86,8 +86,6 @@ void Tree::insert(const Vector& position, const float mass)
 
 void Tree::accumulate(const uint32_t node_index, const Vector& position, const float mass)
 {
-    NBODY_PROFILE_ZONE();
-
     const Vector node_position = _nodes[node_index].com;
     const float node_mass = _nodes[node_index].mass;
     const float total_mass = mass + node_mass;
