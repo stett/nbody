@@ -2,6 +2,7 @@
 #include <cassert>
 #include <stdexcept>
 #include "nbody/sim.h"
+#include "nbody/profile.h"
 #include "context.h"
 #include "solver.h"
 #include "solvers/cpu_barnes_hut.h"
@@ -180,6 +181,9 @@ Sim& Sim::operator=(Sim&&) noexcept = default;
 
 bool Sim::set_variant(const Variant v)
 {
+    // Rare, but not cheap: a switch hands the state to a new solver and can bring up a
+    // vulkan device the first time. Worth seeing as a spike rather than wondering at one.
+    NBODY_PROFILE_ZONE();
     if (!valid(v))
     {
         _last_error = "unknown variant";
@@ -291,9 +295,27 @@ void Sim::set_wrap(const bool v) { _state->wrap = v; }
 // Sim::integrate(), so a normal frame does one revision comparison and, in the steady
 // state, no virtual ingest() call at all. Nothing can mutate the state between a step's
 // two halves, so syncing before each separately would be redundant.
-void Sim::update(const float dt) { sync_solver(); _solver->update(dt); }
-void Sim::accelerate() { sync_solver(); _solver->accelerate(); }
-void Sim::integrate(const float dt) { sync_solver(); _solver->integrate(dt); }
+void Sim::update(const float dt)
+{
+    NBODY_PROFILE_ZONE();
+    NBODY_PROFILE_PLOT("bodies", static_cast<int64_t>(_state->bodies.size()));
+    sync_solver();
+    _solver->update(dt);
+}
+
+void Sim::accelerate()
+{
+    NBODY_PROFILE_ZONE();
+    sync_solver();
+    _solver->accelerate();
+}
+
+void Sim::integrate(const float dt)
+{
+    NBODY_PROFILE_ZONE();
+    sync_solver();
+    _solver->integrate(dt);
+}
 
 const nbody::bh::Tree* Sim::tree() const { return _solver->tree(); }
 

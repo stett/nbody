@@ -1,4 +1,5 @@
 #include "nbody/bhtree.h"
+#include "nbody/profile.h"
 
 using nbody::bh::Node;
 using nbody::bh::Tree;
@@ -140,6 +141,10 @@ void Tree::clear()
 
 void Tree::query(const Ray& ray, const std::function<bool(const Node&)>& visitor) const
 {
+    // Once per picking ray, so cheap to measure. insert(), accumulate() and apply() are not
+    // instrumented on purpose -- they run per body or per node visited, and a zone apiece
+    // would cost more than the traversal it was timing.
+    NBODY_PROFILE_ZONE();
     uint32_t node_index = 0;
     do
     {

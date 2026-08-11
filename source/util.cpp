@@ -4,6 +4,7 @@
 #include "nbody/util.h"
 #include "nbody/constants.h"
 #include "nbody/bhtree.h"
+#include "nbody/profile.h"
 
 float nbody::util::compute_radius(const float mass, const float density)
 {
@@ -15,6 +16,10 @@ void nbody::util::disk(
     std::vector<Body>::iterator end,
     DiskArgs args)
 {
+    // Only on spawn, but it builds a whole tree of its own to derive orbital velocities,
+    // so it is worth being able to see when a scene change stalls a frame.
+    NBODY_PROFILE_ZONE();
+
     // temp tree for velocity calculation
     bh::Tree tree({.center={ args.center.x, args.center.y, args.center.z }, .size=2.f * args.outer_radius});
 
@@ -96,6 +101,8 @@ void nbody::util::cube(
     std::vector<Body>::iterator end,
     CubeArgs args)
 {
+    NBODY_PROFILE_ZONE();
+
     // make sure we have space in the bodies array
     const size_t num = end - begin;
     if (num == 0) { return; }

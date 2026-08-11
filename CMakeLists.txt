@@ -3,6 +3,12 @@ project(nbody)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Instrumentation is opt-in. The zone macros compile to nothing without it and the tracy
+# client is not configured or built at all, so an ordinary build is unaffected by any of it.
+# Consumers of this library see the setting too, since the macros are used in their code as
+# well as ours -- see include/nbody/profile.h.
+option(NBODY_TRACY "Instrument with the Tracy profiler" OFF)
+
 # add dependencies
 add_subdirectory(external)
 
@@ -13,6 +19,13 @@ add_library(nbody STATIC ${sources})
 # link external libraries
 target_include_directories(nbody PUBLIC "include" "source")
 target_link_libraries(nbody PUBLIC BS_thread_pool)
+
+# PUBLIC on both counts: profile.h is a public header and the macros are meant to be used by
+# whoever embeds this library, so the client and the switch that arms it have to reach them.
+if (NBODY_TRACY)
+    target_link_libraries(nbody PUBLIC Tracy::TracyClient)
+    target_compile_definitions(nbody PUBLIC NBODY_PROFILE)
+endif()
 
 # GPU support is a build-time dependency but a *run-time* capability: the Vulkan backend
 # is always compiled, and whether a usable compute device actually exists is discovered at

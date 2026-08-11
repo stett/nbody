@@ -4,6 +4,7 @@
 #include "solver.h"
 #include "gpu.h"
 #include "detail/tree.h"
+#include "nbody/profile.h"
 
 namespace nbody
 {
@@ -56,6 +57,7 @@ namespace nbody
         // is never left idle waiting to be handed the second dispatch.
         void update(const float dt) override
         {
+            NBODY_PROFILE_ZONE();
             // See accelerate(): an empty body array cannot be bound as a descriptor.
             if (_state->bodies.empty())
                 return;
@@ -71,6 +73,7 @@ namespace nbody
 
         void accelerate() override
         {
+            NBODY_PROFILE_ZONE();
             // An empty body array cannot be bound: Buffer::allocate() leaves a null
             // vk::Buffer at size 0, and write() would bind it with range 0 --
             // VUID-VkDescriptorBufferInfo-range-00341, and undefined behaviour without
@@ -86,6 +89,7 @@ namespace nbody
 
         void integrate(const float dt) override
         {
+            NBODY_PROFILE_ZONE();
             // See accelerate(): an empty body array cannot be bound as a descriptor.
             if (_state->bodies.empty())
                 return;
@@ -118,6 +122,7 @@ namespace nbody
         // Bring _tree in line with the current bodies, ready to be bound for a dispatch.
         void build_or_clear_tree()
         {
+            NBODY_PROFILE_ZONE();
             if (_mode == Mode::NLogN)
             {
                 detail::build_tree(_tree, _state->bodies, _state->size);
@@ -136,6 +141,7 @@ namespace nbody
         // different internal layout would transform here.
         void upload()
         {
+            NBODY_PROFILE_ZONE();
             _gpu->write(_state->bodies, _tree.nodes());
             _host_dirty = false;
         }
@@ -145,6 +151,7 @@ namespace nbody
         // with a different internal layout would transform here.
         void materialize() const
         {
+            NBODY_PROFILE_ZONE();
             if (!_device_dirty)
                 return;
             _gpu->read(_state->bodies);

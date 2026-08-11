@@ -7,6 +7,7 @@
 #include <vector>
 #include <array>
 #include "gpu.h"
+#include "nbody/profile.h"
 #include "shaders/accelerate.h"
 #include "shaders/integrate.h"
 
@@ -293,6 +294,7 @@ vk::raii::Pipeline GpuDevice::make_pipeline(vk::raii::ShaderModule& shader)
 
 void GpuDevice::write(const std::vector<Body>& bodies, const std::vector<bh::Node>& nodes)
 {
+    NBODY_PROFILE_ZONE();
     // Land the data in host memory and size the device buffers to match. The copy across
     // is recorded into the next command buffer rather than done here, so it runs on the
     // transfer hardware alongside everything else instead of on this thread.
@@ -339,6 +341,7 @@ void GpuDevice::write(const std::vector<Body>& bodies, const std::vector<bh::Nod
 
 void GpuDevice::read(std::vector<Body>& bodies)
 {
+    NBODY_PROFILE_ZONE();
     // Read from staging, which record_readback() filled during the submission the caller
     // has already waited on. Copy back only what both sides can hold: the allocation only
     // ever grows, so reading all of it overruns `bodies` whenever the count has shrunk.
@@ -439,6 +442,7 @@ void GpuDevice::record_dispatch_barrier()
 // step should set it, or a tool would see each dispatch as a frame of its own.
 void GpuDevice::submit_and_wait(const bool frame_end)
 {
+    NBODY_PROFILE_ZONE();
     device.resetFences({ *fence });
 
     vk::SubmitInfo submit_info(
@@ -462,8 +466,15 @@ void GpuDevice::submit_and_wait(const bool frame_end)
     }
 
     queue.submit(submit_info, *fence);
-    const vk::Result result = device.waitForFences({ *fence }, VK_TRUE, UINT64_MAX);
-    assert(result == vk::Result::eSuccess);
+
+    {
+        // Split out from the submission around it: this is the host standing still until
+        // the device is done, and it is the only part of a step whose length says anything
+        // about how long the shaders took.
+        NBODY_PROFILE_ZONE_NAMED("wait for device");
+        const vk::Result result = device.waitForFences({ *fence }, VK_TRUE, UINT64_MAX);
+        assert(result == vk::Result::eSuccess);
+    }
 }
 
 void GpuDevice::set_accelerate_constants(const float theta, const float gravity, const Mode mode)
@@ -523,6 +534,8 @@ void GpuDevice::step(
     const float size,
     const bool wrap)
 {
+    NBODY_PROFILE_ZONE();
+
     command_buffer.begin({ });
     record_upload();
 
@@ -602,6 +615,7 @@ void nbody::Buffer::reserve(const size_t bytes)
 
 void nbody::Buffer::write(const void* data, const size_t data_size)
 {
+    NBODY_PROFILE_ZONE();
     reserve(data_size);
     if (used == 0) { return; }
     assert(mapped != nullptr);
@@ -610,6 +624,7 @@ void nbody::Buffer::write(const void* data, const size_t data_size)
 
 void nbody::Buffer::read(void* data, const size_t data_size) const
 {
+    NBODY_PROFILE_ZONE();
     assert(data_size <= size);
     if (data_size == 0) { return; }
     assert(mapped != nullptr);
