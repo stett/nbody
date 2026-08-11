@@ -8,6 +8,13 @@
 // CPU solver and mirrored in GLSL (shaders/accelerate.comp and shaders/integrate.comp,
 // over the declarations in shaders/include/common.glsl). Any change here must be made in
 // both places or the CPU and GPU variants will silently disagree.
+//
+// The two are not bit-identical, and are not meant to be. The shader divides by an
+// approximate reciprocal square root, which the hardware has an instruction for, where
+// gravity() below uses an exact sqrt and divide. That difference turns out not to be what
+// separates the two -- summing the same forces in a different order dominates it, and the
+// cross-check in tests/source/test_gpu.cpp reports the same worst-case error either way.
+// The agreement that check asserts is the real contract between them.
 namespace nbody::detail
 {
     // Gravitational acceleration on a body at `pos` due to mass `src_mass` at `src_pos`.
