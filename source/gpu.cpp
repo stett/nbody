@@ -73,6 +73,8 @@ GpuDevice::GpuDevice()
     : instance(make_instance())
     , physical_device(make_physical_device())
     , device(make_device())
+    , queue(device.getQueue(queue_family_index, 0))
+    , fence(device, vk::FenceCreateInfo{ })
     , command_pool(make_command_pool())
     , command_buffer(make_command_buffer())
     , semaphore(device.createSemaphore({ }))
@@ -352,8 +354,7 @@ void GpuDevice::integrate(const float dt, const float size, const bool wrap)
     command_buffer.end();
 
     // submit the command and wait for the result
-    vk::raii::Fence fence(device, vk::FenceCreateInfo{ });
-    vk::raii::Queue queue = device.getQueue(queue_family_index, 0);
+    device.resetFences({ *fence });
     vk::SubmitInfo submit_info(
         0, // wait semaphore count
         nullptr, // wait semaphores
@@ -400,8 +401,7 @@ void GpuDevice::accelerate(const float theta, const float gravity, const Mode mo
     command_buffer.end();
 
     // submit the command and wait for the result
-    vk::raii::Fence fence(device, vk::FenceCreateInfo{ });
-    vk::raii::Queue queue = device.getQueue(queue_family_index, 0);
+    device.resetFences({ *fence });
     const vk::SubmitInfo submit_info(
         0, // wait semaphore count
         nullptr, // wait semaphores

@@ -90,6 +90,13 @@ namespace nbody
         vk::raii::Instance instance;
         vk::raii::PhysicalDevice physical_device;
         vk::raii::Device device;
+
+        // The queue and the fence are the same objects every submission, so they are held
+        // rather than built per dispatch. Initialized after `device` and so able to use the
+        // queue_family_index that make_device() resolves.
+        vk::raii::Queue queue;
+        vk::raii::Fence fence;
+
         vk::raii::CommandPool command_pool;
         vk::raii::CommandBuffer command_buffer;
         vk::raii::Semaphore semaphore;
