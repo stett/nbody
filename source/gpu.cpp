@@ -85,8 +85,10 @@ GpuDevice::GpuDevice()
     , shader_accelerate(make_shader(spv_accelerate))
     , pipeline_integrate(make_pipeline(shader_integrate))
     , pipeline_accelerate(make_pipeline(shader_accelerate))
-    , buffer_bodies(make_buffer<Body>(0))
-    , buffer_nodes(make_buffer<bh::Node>(0))
+    , buffer_bodies(make_device_buffer<Body>(0))
+    , buffer_nodes(make_device_buffer<bh::Node>(0))
+    , staging_bodies(make_staging_buffer<Body>(0))
+    , staging_nodes(make_staging_buffer<bh::Node>(0))
 { }
 
 std::string GpuDevice::probe() noexcept
@@ -291,11 +293,19 @@ vk::raii::Pipeline GpuDevice::make_pipeline(vk::raii::ShaderModule& shader)
 
 void GpuDevice::write(const std::vector<Body>& bodies, const std::vector<bh::Node>& nodes)
 {
-    // update buffers
-    buffer_bodies.write(bodies.data(), sizeof(Body) * bodies.size());
-    buffer_nodes.write(nodes.data(), sizeof(bh::Node) * nodes.size());
+    // Land the data in host memory and size the device buffers to match. The copy across
+    // is recorded into the next command buffer rather than done here, so it runs on the
+    // transfer hardware alongside everything else instead of on this thread.
+    const size_t bodies_bytes = sizeof(Body) * bodies.size();
+    const size_t nodes_bytes = sizeof(bh::Node) * nodes.size();
 
-    // update descriptor sets
+    staging_bodies.write(bodies.data(), bodies_bytes);
+    staging_nodes.write(nodes.data(), nodes_bytes);
+    buffer_bodies.reserve(bodies_bytes);
+    buffer_nodes.reserve(nodes_bytes);
+    upload_pending = true;
+
+    // update descriptor sets -- the shaders bind the device buffers, never the staging pair
     vk::DescriptorBufferInfo descriptor_buffer_info_bodies = { buffer_bodies.buffer, 0, buffer_bodies.size };
     vk::DescriptorBufferInfo descriptor_buffer_info_nodes = { buffer_nodes.buffer, 0, buffer_nodes.size };
     std::array<vk::WriteDescriptorSet, 2> descriptor_set_writes
@@ -329,15 +339,68 @@ void GpuDevice::write(const std::vector<Body>& bodies, const std::vector<bh::Nod
 
 void GpuDevice::read(std::vector<Body>& bodies)
 {
-    // Copy back only what both sides can hold. buffer_bodies.size is the allocation,
-    // which only ever grows, so reading that many bytes overruns `bodies` whenever the
-    // body count has shrunk since the buffer was sized.
+    // Read from staging, which record_readback() filled during the submission the caller
+    // has already waited on. Copy back only what both sides can hold: the allocation only
+    // ever grows, so reading all of it overruns `bodies` whenever the count has shrunk.
     const size_t want = bodies.size() * sizeof(Body);
-    buffer_bodies.read(bodies.data(), std::min<size_t>(want, buffer_bodies.used));
+    staging_bodies.read(bodies.data(), std::min<size_t>(want, staging_bodies.used));
 }
 
-// Bind and dispatch one compute pipeline over the current body count. Records only --
-// the caller decides what else goes in the command buffer and when it is submitted.
+// Copy whatever write() staged into the device buffers, and order the shaders after it.
+void GpuDevice::record_upload()
+{
+    if (!upload_pending) { return; }
+    upload_pending = false;
+
+    if (staging_bodies.used > 0)
+        command_buffer.copyBuffer(
+            staging_bodies.buffer, buffer_bodies.buffer,
+            vk::BufferCopy(0, 0, staging_bodies.used));
+
+    if (staging_nodes.used > 0)
+        command_buffer.copyBuffer(
+            staging_nodes.buffer, buffer_nodes.buffer,
+            vk::BufferCopy(0, 0, staging_nodes.used));
+
+    const vk::MemoryBarrier barrier(
+        vk::AccessFlagBits::eTransferWrite,
+        vk::AccessFlagBits::eShaderRead);
+
+    command_buffer.pipelineBarrier(
+        vk::PipelineStageFlagBits::eTransfer,
+        vk::PipelineStageFlagBits::eComputeShader,
+        { }, barrier, { }, { });
+}
+
+// Bring the bodies back to where the host can read them once the shaders are done.
+void GpuDevice::record_readback()
+{
+    if (buffer_bodies.used == 0) { return; }
+
+    const vk::MemoryBarrier before(
+        vk::AccessFlagBits::eShaderWrite,
+        vk::AccessFlagBits::eTransferRead);
+
+    command_buffer.pipelineBarrier(
+        vk::PipelineStageFlagBits::eComputeShader,
+        vk::PipelineStageFlagBits::eTransfer,
+        { }, before, { }, { });
+
+    command_buffer.copyBuffer(
+        buffer_bodies.buffer, staging_bodies.buffer,
+        vk::BufferCopy(0, 0, buffer_bodies.used));
+
+    // Make the transfer visible to the host reads that follow the fence.
+    const vk::MemoryBarrier after(
+        vk::AccessFlagBits::eTransferWrite,
+        vk::AccessFlagBits::eHostRead);
+
+    command_buffer.pipelineBarrier(
+        vk::PipelineStageFlagBits::eTransfer,
+        vk::PipelineStageFlagBits::eHost,
+        { }, after, { }, { });
+}
+
 void GpuDevice::record_dispatch(vk::raii::Pipeline& pipeline)
 {
     command_buffer.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline);
@@ -422,7 +485,9 @@ void GpuDevice::integrate(const float dt, const float size, const bool wrap)
     set_integrate_constants(dt, size, wrap);
 
     command_buffer.begin({ });
+    record_upload();
     record_dispatch(pipeline_integrate);
+    record_readback();
     command_buffer.end();
 
     submit_and_wait(true);
@@ -433,7 +498,9 @@ void GpuDevice::accelerate(const float theta, const float gravity, const Mode mo
     set_accelerate_constants(theta, gravity, mode);
 
     command_buffer.begin({ });
+    record_upload();
     record_dispatch(pipeline_accelerate);
+    record_readback();
     command_buffer.end();
 
     submit_and_wait(false);
@@ -457,6 +524,7 @@ void GpuDevice::step(
     const bool wrap)
 {
     command_buffer.begin({ });
+    record_upload();
 
     set_accelerate_constants(theta, gravity, mode);
     record_dispatch(pipeline_accelerate);
@@ -468,6 +536,7 @@ void GpuDevice::step(
     set_integrate_constants(dt, size, wrap);
     record_dispatch(pipeline_integrate);
 
+    record_readback();
     command_buffer.end();
 
     submit_and_wait(true);
@@ -503,29 +572,39 @@ void nbody::Buffer::allocate(const size_t _size)
     memory = GpuDevice::alloc_device_memory(device, physical_device.getMemoryProperties(), buffer.getMemoryRequirements(), properties);
     buffer.bindMemory(memory, 0);
 
+    // Device-local storage is not host-visible and cannot be mapped at all; it is reached
+    // through a staging buffer instead.
+    if (!(properties & vk::MemoryPropertyFlagBits::eHostVisible))
+        return;
+
     // Map once and keep it for as long as the allocation lives. vkMapMemory is not a
     // pointer handout: the driver reserves address space and populates page tables, work
     // proportional to the size of the allocation. Mapping per access paid that on every
     // buffer on every frame. Vulkan explicitly permits a mapping to persist, and nothing
     // here benefits from letting it lapse.
     //
-    // No flush or invalidate accompanies the copies below because the memory is coherent;
-    // alloc_device_memory only ever returns host-visible memory that is also host-coherent.
+    // No flush or invalidate accompanies the copies below because every host-visible mask
+    // requested here is also host-coherent.
     mapped = memory.mapMemory(0, size);
+}
+
+void nbody::Buffer::reserve(const size_t bytes)
+{
+    // resize, only if growing
+    if (bytes > size)
+    {
+        allocate(bytes);
+    }
+
+    // track how much of the (possibly larger) allocation is actually live
+    used = bytes;
 }
 
 void nbody::Buffer::write(const void* data, const size_t data_size)
 {
-    // resize, only if growing
-    if (data_size > size)
-    {
-        allocate(data_size);
-    }
-
-    // track how much of the (possibly larger) allocation is actually live
-    used = data_size;
+    reserve(data_size);
     if (used == 0) { return; }
-
+    assert(mapped != nullptr);
     memcpy(mapped, data, used);
 }
 
@@ -533,6 +612,7 @@ void nbody::Buffer::read(void* data, const size_t data_size) const
 {
     assert(data_size <= size);
     if (data_size == 0) { return; }
+    assert(mapped != nullptr);
     std::memcpy(data, mapped, data_size);
 }
 
@@ -608,63 +688,23 @@ vk::raii::DeviceMemory GpuDevice::alloc_device_memory(
     vk::MemoryRequirements const& memoryRequirements,
     vk::MemoryPropertyFlags memoryPropertyFlags)
 {
-    // Prefer memory that is device-local *and* mappable (the BAR window; the whole of VRAM
-    // when resizable BAR is on). The buffers are read by every shader invocation and the
-    // barnes-hut traversal in particular is a divergent, latency-bound pointer chase --
-    // serving those reads from system RAM over PCIe costs far more than the brute-force
-    // path, whose warp-uniform sequential sweep both coalesces and caches.
-    //
-    // find_memory_type takes the first type satisfying the mask, and on discrete NVIDIA the
-    // plain HOST_VISIBLE|HOST_COHERENT system-memory type is enumerated before the
-    // device-local one, so asking for the base mask alone reliably lands in system RAM.
-    //
-    // Fall back when there is no such type, or when the request does not fit the BAR heap:
-    // pre-resizable-BAR parts expose only 256MB there, and overflowing it fails allocation.
-    // Callers map this memory, so the fallback must stay host-visible.
     log_memory_types_once( memoryProperties );
 
-    // For a mappable request, treat eDeviceLocal as a preference rather than a requirement:
-    // ask for it, but keep a host-visible-only mask to retreat to. Requiring it in the
-    // fallback too would defeat the point, since the BAR type is the only one that has both
-    // and it is exactly the one that just failed.
-    const bool mappable = bool( memoryPropertyFlags & vk::MemoryPropertyFlagBits::eHostVisible );
-    const vk::MemoryPropertyFlags fallback_flags = mappable
-        ? ( memoryPropertyFlags & ~vk::MemoryPropertyFlags( vk::MemoryPropertyFlagBits::eDeviceLocal ) )
-        : memoryPropertyFlags;
+    // Callers state exactly what they need and get it. There is no preference to express
+    // any more: shader storage asks for DEVICE_LOCAL and lands in the full VRAM heap, while
+    // staging asks for HOST_CACHED, which no device-local type offers and which therefore
+    // resolves to system memory on its own.
+    const uint32_t memoryTypeIndex = find_memory_type( memoryProperties, memoryRequirements.memoryTypeBits, memoryPropertyFlags );
 
-    const uint32_t fallback = find_memory_type( memoryProperties, memoryRequirements.memoryTypeBits, fallback_flags );
-    uint32_t preferred = no_memory_type;
-    if ( mappable )
+    if ( vulkan_verbose() )
     {
-        preferred = try_find_memory_type(
-            memoryProperties,
-            memoryRequirements.memoryTypeBits,
-            fallback_flags | vk::MemoryPropertyFlagBits::eDeviceLocal );
-
-        // The heap size is an upper bound, not the free space -- the other buffer is already
-        // resident, and a grow holds both the old and new allocation at once. Screening on it
-        // avoids the obviously-hopeless request; the try/catch below covers the rest.
-        if ( preferred != no_memory_type &&
-             memoryRequirements.size > memoryProperties.memoryHeaps[memoryProperties.memoryTypes[preferred].heapIndex].size )
-            preferred = no_memory_type;
+        const vk::MemoryType& type = memoryProperties.memoryTypes[memoryTypeIndex];
+        std::cerr
+            << "nbody: allocating " << ( memoryRequirements.size >> 10 ) << " KiB"
+            << " from memory type " << memoryTypeIndex
+            << " (" << describe_memory_flags( type.propertyFlags ) << ")"
+            << " on heap " << type.heapIndex << std::endl;
     }
 
-    if ( preferred != no_memory_type && preferred != fallback )
-    {
-        try
-        {
-            return { device, vk::MemoryAllocateInfo( memoryRequirements.size, preferred ) };
-        }
-        catch ( const vk::SystemError& )
-        {
-            // A small BAR window fills up long before VRAM does. Losing device-local
-            // placement costs performance; failing the allocation would cost the frame.
-            std::cerr
-                << "nbody: device-local BAR allocation of " << ( memoryRequirements.size >> 20 )
-                << " MiB failed, falling back to host memory (shader reads will cross PCIe)"
-                << std::endl;
-        }
-    }
-
-    return { device, vk::MemoryAllocateInfo( memoryRequirements.size, fallback ) };
+    return { device, vk::MemoryAllocateInfo( memoryRequirements.size, memoryTypeIndex ) };
 }
