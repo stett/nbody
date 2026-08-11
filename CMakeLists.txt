@@ -9,6 +9,13 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # well as ours -- see include/nbody/profile.h.
 option(NBODY_TRACY "Instrument with the Tracy profiler" OFF)
 
+# The profiler application itself, as a target here rather than a separate cmake invocation
+# down in the submodule. Off by default and deliberately separate from NBODY_TRACY: it is a
+# large gui program whose dependencies are fetched over the network when this is configured,
+# which is not a cost an instrumented build of the simulation should also pay. Once built it
+# does not go stale, so this is usually switched on for one configure and off again.
+option(NBODY_TRACY_PROFILER "Build the Tracy profiler application as a target" OFF)
+
 # add dependencies
 add_subdirectory(external)
 
