@@ -6,20 +6,24 @@
 
 layout(local_size_x = 256) in;
 
-// The bodies, split into parallel arrays so each dispatch reads only the fields it needs.
+// The bodies, split into parallel arrays grouped by how often each field crosses the bus.
 // Each struct must match the like-named one in source/gpu.h field for field, and the
 // bindings must match make_descriptor_set_layout(). A stage may leave a binding
 // undeclared -- integrate never reads the nodes at binding 3.
-struct BodyPosRadius
+//
+// pos and mass share an array because the n^2 inner loop wants exactly those two: a vec3
+// occupies 16 bytes here whatever follows it, so pairing them costs nothing and saves the
+// loop a second array to stream.
+struct BodyPosMass
 {
     vec3 pos;
-    float radius;
+    float mass;
 };
 
-struct BodyVelMass
+struct BodyVelRadius
 {
     vec3 vel;
-    float mass;
+    float radius;
 };
 
 struct BodyAcc
@@ -28,12 +32,12 @@ struct BodyAcc
     float __pad;
 };
 
-layout(std430, binding = 0) buffer PosRadiusBuffer {
-    BodyPosRadius pos_radius[];
+layout(std430, binding = 0) buffer PosMassBuffer {
+    BodyPosMass pos_mass[];
 };
 
-layout(std430, binding = 1) buffer VelMassBuffer {
-    BodyVelMass vel_mass[];
+layout(std430, binding = 1) buffer VelRadiusBuffer {
+    BodyVelRadius vel_radius[];
 };
 
 layout(std430, binding = 2) buffer AccBuffer {

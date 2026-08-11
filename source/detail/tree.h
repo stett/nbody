@@ -8,19 +8,29 @@ namespace nbody::detail
 {
     // Rebuild the barnes-hut acceleration tree from scratch. Shared by the CPU and GPU
     // barnes-hut solvers so the two cannot drift apart in how the tree is constructed.
-    inline void build_tree(bh::Tree& tree, const std::vector<Body>& bodies, const float size)
+    //
+    // Templated on the element only so the GPU solver can build straight out of its staging
+    // positions: `Body` and `BodyPosMass` both expose .pos and .mass, and insisting on the
+    // former would mean re-interleaving a million bodies for the sake of two fields.
+    template <typename Item>
+    void build_tree(bh::Tree& tree, const Item* items, const size_t count, const float size)
     {
         // Serial, and shared by both barnes-hut solvers: the part of a GPU frame the
         // device cannot help with.
         NBODY_PROFILE_ZONE();
         tree.clear({ .size = size });
-        tree.reserve(bodies.size() << 2);
+        tree.reserve(count << 2);
         {
             NBODY_PROFILE_ZONE_NAMED("Insert bodies");
-            for (const Body& body : bodies)
-                tree.insert(body.pos, body.mass);
+            for (size_t i = 0; i < count; ++i)
+                tree.insert(items[i].pos, items[i].mass);
         }
 
         NBODY_PROFILE_PLOT("bh nodes", static_cast<int64_t>(tree.nodes().size()));
+    }
+
+    inline void build_tree(bh::Tree& tree, const std::vector<Body>& bodies, const float size)
+    {
+        build_tree(tree, bodies.data(), bodies.size(), size);
     }
 }

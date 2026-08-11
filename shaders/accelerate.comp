@@ -45,7 +45,8 @@ vec3 accelerate_n2(vec3 pos, float radius)
     vec3 acc = vec3(0);
     for (uint i = 0; i < pc.num_bodies; ++i)
     {
-        acc += accelerate(pos, radius, pos_radius[i].pos, vel_mass[i].mass);
+        // One array, not two: pos and mass are the whole of what this loop reads.
+        acc += accelerate(pos, radius, pos_mass[i].pos, pos_mass[i].mass);
     }
     return acc;
 }
@@ -98,9 +99,10 @@ void main() {
     if (i >= uint(pc.num_bodies))
         return;
 
-    // get the current state of this body
-    vec3 pos = pos_radius[i].pos;
-    float radius = pos_radius[i].radius;
+    // get the current state of this body -- radius is read once here, not once per pair,
+    // which is why it sits in the array the inner loops do not touch
+    vec3 pos = pos_mass[i].pos;
+    float radius = vel_radius[i].radius;
 
     // compute the acceleration at this position
     if (pc.mode == N2)

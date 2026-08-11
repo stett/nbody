@@ -9,8 +9,8 @@ void main() {
         return;
 
     // get current state for this body
-    vec3 pos = pos_radius[i].pos;
-    vec3 vel = vel_mass[i].vel;
+    vec3 pos = pos_mass[i].pos;
+    vec3 vel = vel_radius[i].vel;
     vec3 acc = accs[i].acc;
 
     // integrate using semi-implicit euler
@@ -28,6 +28,6 @@ void main() {
     }
 
     // update body info
-    pos_radius[i].pos = pos;
-    vel_mass[i].vel = vel;
+    pos_mass[i].pos = pos;
+    vel_radius[i].vel = vel;
 }

@@ -1,4 +1,6 @@
 #pragma once
+#include <cstddef>
+#include <cstdint>
 #include <vector>
 #include "vulkan/vulkan_raii.hpp"
 #include "nbody/body.h"
@@ -26,25 +28,63 @@ namespace nbody
 
     // The device's view of the bodies, as three parallel arrays rather than one array of
     // Body. Each must match the like-named struct in shaders/include/common.glsl field for
-    // field. The 16-byte grouping is deliberate: a bare float[3] array would leave vec3
-    // reads straddling cache lines, and std430 would pad each element back up anyway.
-    struct BodyPosRadius
+    // field.
+    //
+    // The grouping is by transfer lifetime, not by field. A vec3 has 16-byte base alignment
+    // even in std430, so an array of bare positions costs the same 16 bytes per body that
+    // {pos, mass} does -- the fourth word is already paid for, and the only question is
+    // whether it carries something the same loop wants:
+    //
+    //   pos_mass     read every frame by the n^2 inner loop and by the host tree build,
+    //                which both want exactly these two fields and now stream one array
+    //                instead of two. Downloaded every frame; mass rides along as static
+    //                freight, uploaded once.
+    //   vel_radius   device-resident. Radius is read once per invocation rather than once
+    //                per pair, so it does not belong in the array the n^2 loop streams,
+    //                and neither field is worth downloading unless a caller asks.
+    //   acc          scratch between the accelerate and integrate dispatches. Transferred
+    //                only when the host has set it or explicitly wants to read it.
+    struct BodyPosMass
     {
-        float pos[3];
-        float radius;
+        Vector pos;
+        float mass = 0;
     };
 
-    struct BodyVelMass
+    struct BodyVelRadius
     {
-        float vel[3];
-        float mass;
+        Vector vel;
+        float radius = 0;
     };
 
     struct BodyAcc
     {
-        float acc[3];
-        float __pad;
+        Vector acc;
+        float __pad = 0;
     };
+
+    // Which of the body arrays a transfer brings back from the device. A bitmask because
+    // the whole point of the split is that the three are fetched independently: the
+    // barnes-hut tree build needs Positions every frame, and nothing else needs anything
+    // until a caller actually reads the bodies.
+    enum class Readback : uint32_t
+    {
+        None = 0,
+        Positions = 1 << 0,
+        Velocities = 1 << 1,
+        Accelerations = 1 << 2,
+        All = Positions | Velocities | Accelerations,
+    };
+
+    constexpr Readback operator|(const Readback a, const Readback b)
+    { return static_cast<Readback>(static_cast<uint32_t>(a) | static_cast<uint32_t>(b)); }
+
+    constexpr Readback operator&(const Readback a, const Readback b)
+    { return static_cast<Readback>(static_cast<uint32_t>(a) & static_cast<uint32_t>(b)); }
+
+    constexpr Readback operator~(const Readback a)
+    { return static_cast<Readback>(~static_cast<uint32_t>(a) & static_cast<uint32_t>(Readback::All)); }
+
+    constexpr bool any(const Readback a) { return a != Readback::None; }
 
     struct Buffer
     {
@@ -61,11 +101,17 @@ namespace nbody
         vk::raii::Buffer buffer;
         vk::raii::DeviceMemory memory;
 
+        // The half-open byte range of `mapped` the host has written since the last copy was
+        // recorded, coalesced into one span. Empty when begin == end. record_upload() sends
+        // this rather than the whole array, which is what makes a one-body edit cost one
+        // body's worth of bus traffic.
+        vk::DeviceSize dirty_begin = 0;
+        vk::DeviceSize dirty_end = 0;
+
         // Persistent mapping of `memory`, established by allocate() and valid whenever
         // `size` is non-zero. Null for an empty allocation, and for device-local memory
         // that was never host-visible in the first place. Callers that de-interleave on the
-        // way through -- GpuDevice::write() and read() -- address it directly rather than
-        // paying for a second copy through write() below.
+        // way through address it through at() rather than paying for a second copy.
         void* mapped = nullptr;
 
         Buffer(
@@ -78,13 +124,27 @@ namespace nbody
         // allocate gpu memory
         void allocate(size_t size);
 
-        // Grow to hold `bytes` and record that many as live, without touching the contents.
-        // For a device-local buffer, whose storage is only ever filled by a transfer, this
-        // is the whole of what sizing means.
-        void reserve(size_t bytes);
+        // Grow to hold `bytes` and record that many as live, without preserving the
+        // contents. Returns whether the storage moved -- a caller that wanted to write only
+        // part of the buffer has to write all of it after a move, because the rest of the
+        // new allocation holds nothing.
+        bool reserve(size_t bytes);
 
-        // copy data to the buffer, potentially resizing. requires host-visible memory
-        void write(const void* data, size_t data_size);
+        // Copy into the buffer at `offset` and mark the range for upload. Requires
+        // host-visible memory sized by a prior reserve().
+        void write(const void* data, size_t offset, size_t bytes);
+
+        // Address into the mapping, for a caller that would rather build its data in place
+        // than build it elsewhere and copy. Does no dirty bookkeeping, so it is safe to call
+        // from worker threads on disjoint ranges; mark the range with dirty() first.
+        std::byte* at(size_t offset);
+        const std::byte* at(size_t offset) const;
+
+        // Fold [offset, offset + bytes) into the pending upload range.
+        void dirty(size_t offset, size_t bytes);
+
+        void clear_dirty() { dirty_begin = dirty_end = 0; }
+        [[nodiscard]] bool is_dirty() const { return dirty_end > dirty_begin; }
     };
 
     // A vulkan compute device plus the pipelines the simulation runs on it. Owned by
@@ -105,15 +165,48 @@ namespace nbody
         // construction failure is reported separately, when the variant is first selected.
         static std::string probe() noexcept;
 
-        void write(const std::vector<Body>& bodies, const std::vector<bh::Node>& nodes);
-        void read(std::vector<Body>& bodies);
-        void integrate(float dt, float size, bool wrap);
-        void accelerate(float theta, float gravity, Mode mode);
+        // Writable pointers into the staging body arrays, for a caller that would rather
+        // de-interleave in place than build three vectors and copy them. Valid until the
+        // next reserve_bodies(); disjoint sub-ranges may be filled from worker threads,
+        // since map_bodies() has already done all the shared bookkeeping.
+        struct BodyMapping
+        {
+            BodyPosMass* pos_mass;
+            BodyVelRadius* vel_radius;
+            BodyAcc* acc;
+        };
+
+        // Size the body staging arrays. Contents are not preserved across a grow, so this
+        // must be followed by a write of the whole range.
+        void reserve_bodies(size_t num_bodies);
+
+        // Map [offset, offset + count) of the body arrays and mark it for upload.
+        BodyMapping map_bodies(size_t offset, size_t count);
+
+        // Stage the barnes-hut nodes. Sizes as needed, so unlike the bodies there is no
+        // separate reserve step -- the tree is rebuilt whole every frame anyway.
+        void write_nodes(const std::vector<bh::Node>& nodes);
+
+        // Which body arrays currently held in staging match the device, and the pointers to
+        // them. Reading an array that staged() does not name gives the previous step's data.
+        [[nodiscard]] Readback staged() const { return staging_valid; }
+        [[nodiscard]] size_t staged_body_count() const;
+        [[nodiscard]] const BodyPosMass* staged_pos_mass() const;
+        [[nodiscard]] const BodyVelRadius* staged_vel_radius() const;
+        [[nodiscard]] const BodyAcc* staged_acc() const;
+
+        // Bring back anything in `want` that staging does not already hold, in a submission
+        // of its own. A no-op when the last dispatch already read it back, which is how the
+        // per-frame path avoids the extra round trip.
+        void download(Readback want);
+
+        void integrate(float dt, float size, bool wrap, Readback readback);
+        void accelerate(float theta, float gravity, Mode mode, Readback readback);
 
         // Accelerate and integrate in a single submission, ordered by a pipeline barrier.
         // Equivalent to accelerate() followed by integrate(), but without the host round
         // trip between them; prefer it whenever both halves are wanted.
-        void step(float dt, float theta, float gravity, Mode mode, float size, bool wrap);
+        void step(float dt, float theta, float gravity, Mode mode, float size, bool wrap, Readback readback);
 
     private:
 
@@ -141,21 +234,24 @@ namespace nbody
         vk::raii::Pipeline pipeline_accelerate;
         // The buffers the shaders read are device-local and not mappable. The host reaches
         // them only through the staging pair, which the command buffer copies to and from.
-        //
-        // The body fields are split across three buffers so a dispatch pulls in only what it
-        // reads: accelerate() never touches velocity, and integrate() never touches radius.
-        nbody::Buffer buffer_pos_radius;
-        nbody::Buffer buffer_vel_mass;
+        nbody::Buffer buffer_pos_mass;
+        nbody::Buffer buffer_vel_radius;
         nbody::Buffer buffer_acc;
         nbody::Buffer buffer_nodes;
-        nbody::Buffer staging_pos_radius;
-        nbody::Buffer staging_vel_mass;
+        nbody::Buffer staging_pos_mass;
+        nbody::Buffer staging_vel_radius;
         nbody::Buffer staging_acc;
         nbody::Buffer staging_nodes;
 
-        // Set by write(), consumed by the next command buffer: staging holds bodies the
-        // device buffers have not been given yet.
-        bool upload_pending = false;
+        // Which staging body arrays currently agree with the device. Set by an upload (the
+        // host just made the two match) or a readback, and cleared per-array by a dispatch
+        // that writes it. download() consults this to skip work already done.
+        Readback staging_valid = Readback::None;
+
+        // Whether the bound device buffers have moved since the descriptor set was last
+        // written. Separate from the dirty ranges: a buffer can need re-binding without any
+        // new data, and needs re-binding before a dispatch that uploads nothing.
+        bool descriptors_stale = true;
 
         // cached vk data
         uint32_t queue_family_index;
@@ -190,11 +286,16 @@ namespace nbody
 
         vk::raii::Pipeline make_pipeline(vk::raii::ShaderModule& shader);
 
+        // Bring the device buffers up to the size of their staging counterparts and rebind
+        // the descriptor set if anything moved. Runs before recording, not during it, so
+        // that a dispatch which uploads nothing still binds valid storage.
+        void prepare();
+
         // command buffer recording and submission
         void record_dispatch(vk::raii::Pipeline& pipeline);
         void record_dispatch_barrier();
         void record_upload();
-        void record_readback();
+        void record_readback(Readback what);
         void submit_and_wait(bool frame_end);
         void set_accelerate_constants(float theta, float gravity, Mode mode);
         void set_integrate_constants(float dt, float size, bool wrap);
