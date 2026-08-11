@@ -152,9 +152,8 @@ void Tree::clear()
 
 void Tree::query(const Ray& ray, const std::function<bool(const Node&)>& visitor) const
 {
-    // Once per picking ray, so cheap to measure. insert(), accumulate() and apply() are not
-    // instrumented on purpose -- they run per body or per node visited, and a zone apiece
-    // would cost more than the traversal it was timing.
+    // Once per picking ray. insert(), accumulate() and apply() run per body or per node
+    // visited, so they are left uninstrumented.
     NBODY_PROFILE_ZONE();
     uint32_t node_index = 0;
     do

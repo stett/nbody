@@ -181,8 +181,7 @@ Sim& Sim::operator=(Sim&&) noexcept = default;
 
 bool Sim::set_variant(const Variant v)
 {
-    // Rare, but not cheap: a switch hands the state to a new solver and can bring up a
-    // vulkan device the first time. Worth seeing as a spike rather than wondering at one.
+    // Rare, but can bring up a vulkan device the first time.
     NBODY_PROFILE_ZONE();
     if (!valid(v))
     {

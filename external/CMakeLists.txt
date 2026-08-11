@@ -14,15 +14,9 @@ endif()
 
 # tracy profiler client, only when profiling was asked for
 if (NBODY_TRACY)
-    # Plain variables rather than cache entries: tracy declares cmake 3.13, so CMP0077 is
-    # NEW in its scope and its option() calls defer to these without a cache entry being
-    # left behind to confuse a later reconfigure.
-    #
-    # TRACY_ENABLE is the one that matters -- tracy defaults it OFF, and without it every
-    # macro in the client headers expands to nothing however thoroughly the code is
-    # instrumented. ON_DEMAND then holds the recording back until a profiler actually
-    # connects, rather than accumulating from process start. STATIC avoids a client dll
-    # that would have to be shipped alongside the executable.
+    # TRACY_ENABLE defaults OFF in tracy and would compile away everything instrumented
+    # here. ON_DEMAND waits for a profiler to connect; STATIC avoids shipping a client dll.
+    # Plain variables, not cache: CMP0077 is NEW in tracy's scope so its option() defers.
     set(TRACY_ENABLE ON)
     set(TRACY_ON_DEMAND ON)
     set(TRACY_STATIC ON)
@@ -30,31 +24,16 @@ if (NBODY_TRACY)
     add_subdirectory(tracy)
 endif()
 
-# The profiler application, as the `tracy-profiler` target.
-#
-# Its cmake fetches imgui, freetype, capstone and the rest through CPM while configuring, so
-# this directory is only entered when asked for -- otherwise every configure of every build
-# directory would want the network. It declares its own project() and keeps its compile
-# options to its own scope, so nothing it does reaches our targets.
+# The `tracy-profiler` target. Only entered on request: its cmake fetches imgui, freetype,
+# capstone and the rest over the network while configuring.
 if (NBODY_TRACY_PROFILER)
-    # CPM caches what it fetches inside the build tree by default. That path is already
-    # several directories down -- build root, external, nbody, external, tracy, profiler --
-    # and adding a package name, a forty character commit hash and the deepest file in the
-    # package runs past the 260 characters windows still imposes on most of its file API. A
-    # vendored wayland protocol file inside the file-dialog dependency is long enough on its
-    # own to fail the clone, so the default is not merely untidy here, it does not work.
-    #
-    # Anchoring the cache near the source root keeps the total well inside the limit, and
-    # incidentally shares it between build directories rather than refetching per configure.
-    # Deferred to an existing setting if there is one, since a machine-wide cache is a
-    # perfectly good answer too.
+    # CPM's default cache sits under the build tree, where the paths outgrow the 260
+    # character windows limit and the clone fails outright. Keep it near the source root.
     if (NOT DEFINED CPM_SOURCE_CACHE AND NOT DEFINED ENV{CPM_SOURCE_CACHE})
         set(CPM_SOURCE_CACHE "${CMAKE_SOURCE_DIR}/.cpm-cache"
             CACHE PATH "Directory CPM caches fetched dependencies in")
     endif()
 
-    # EXCLUDE_FROM_ALL so that having the profiler available does not mean rebuilding it on
-    # every ordinary build. It stays a named target -- build `tracy-profiler` when you want
-    # it, which in practice is once.
+    # EXCLUDE_FROM_ALL: still buildable by name, but ordinary builds do not relink it.
     add_subdirectory(tracy/profiler EXCLUDE_FROM_ALL)
 endif()

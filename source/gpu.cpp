@@ -468,9 +468,7 @@ void GpuDevice::submit_and_wait(const bool frame_end)
     queue.submit(submit_info, *fence);
 
     {
-        // Split out from the submission around it: this is the host standing still until
-        // the device is done, and it is the only part of a step whose length says anything
-        // about how long the shaders took.
+        // Split from the submission: the only span that says how long the shaders took.
         NBODY_PROFILE_ZONE_NAMED("wait for device");
         const vk::Result result = device.waitForFences({ *fence }, VK_TRUE, UINT64_MAX);
         assert(result == vk::Result::eSuccess);

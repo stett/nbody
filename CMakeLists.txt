@@ -3,17 +3,9 @@ project(nbody)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Instrumentation is opt-in. The zone macros compile to nothing without it and the tracy
-# client is not configured or built at all, so an ordinary build is unaffected by any of it.
-# Consumers of this library see the setting too, since the macros are used in their code as
-# well as ours -- see include/nbody/profile.h.
+# Opt-in: with these off the tracy client is never configured and the macros expand to
+# nothing. Separate options because the profiler fetches its dependencies while configuring.
 option(NBODY_TRACY "Instrument with the Tracy profiler" OFF)
-
-# The profiler application itself, as a target here rather than a separate cmake invocation
-# down in the submodule. Off by default and deliberately separate from NBODY_TRACY: it is a
-# large gui program whose dependencies are fetched over the network when this is configured,
-# which is not a cost an instrumented build of the simulation should also pay. Once built it
-# does not go stale, so this is usually switched on for one configure and off again.
 option(NBODY_TRACY_PROFILER "Build the Tracy profiler application as a target" OFF)
 
 # add dependencies
@@ -27,8 +19,7 @@ add_library(nbody STATIC ${sources})
 target_include_directories(nbody PUBLIC "include" "source")
 target_link_libraries(nbody PUBLIC BS_thread_pool)
 
-# PUBLIC on both counts: profile.h is a public header and the macros are meant to be used by
-# whoever embeds this library, so the client and the switch that arms it have to reach them.
+# PUBLIC: profile.h is a public header, so embedders need both the client and the switch.
 if (NBODY_TRACY)
     target_link_libraries(nbody PUBLIC Tracy::TracyClient)
     target_compile_definitions(nbody PUBLIC NBODY_PROFILE)

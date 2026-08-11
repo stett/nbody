@@ -3,5 +3,5 @@ cmake-build*
 .idea/*
 .DS_Store
 */.DS_Store
-# CPM dependency cache, when the tracy profiler target is built standalone from here
+# CPM cache for the tracy profiler's dependencies
 .cpm-cache/

@@ -51,10 +51,8 @@ namespace nbody
             _host_dirty = true;
         }
 
-        // Both halves of a step in one submission. The base implementation would call
-        // accelerate() then integrate(), which submits twice and blocks the host in
-        // between; GpuDevice::step() orders the two with a barrier instead, so the device
-        // is never left idle waiting to be handed the second dispatch.
+        // Both halves in one submission, ordered by a barrier, rather than the base
+        // implementation's two submits with a host wait between them.
         void update(const float dt) override
         {
             NBODY_PROFILE_ZONE();

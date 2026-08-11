@@ -16,8 +16,7 @@ void nbody::util::disk(
     std::vector<Body>::iterator end,
     DiskArgs args)
 {
-    // Only on spawn, but it builds a whole tree of its own to derive orbital velocities,
-    // so it is worth being able to see when a scene change stalls a frame.
+    // Spawn only, but builds a tree of its own for the orbital velocities.
     NBODY_PROFILE_ZONE();
 
     // temp tree for velocity calculation

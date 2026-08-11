@@ -29,8 +29,7 @@ namespace nbody
             detail::parallel_blocks(*_context->pool, _state->bodies.size(),
                 [this, theta, G](const size_t begin, const size_t end)
                 {
-                    // The traversal itself is not zoned: it visits hundreds of nodes per
-                    // body, and a zone per visit would cost more than the work measured.
+                    // Not zoned per traversal: hundreds of node visits per body.
                     NBODY_PROFILE_ZONE_NAMED("barnes-hut block");
                     for (size_t i = begin; i < end; ++i)
                     {
