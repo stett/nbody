@@ -134,9 +134,9 @@ namespace nbody
             }
         }
 
-        // Push the canonical State into this solver's representation. Today the device
-        // layout already matches Body so this is a straight upload; a solver with a
-        // different internal layout would transform here.
+        // Push the canonical State into this solver's representation, which means
+        // de-interleaving Body into the device's three parallel arrays. GpuDevice::write()
+        // does that as it fills staging.
         void upload()
         {
             NBODY_PROFILE_ZONE();
@@ -144,9 +144,8 @@ namespace nbody
             _host_dirty = false;
         }
 
-        // Convert the device's representation back into the canonical State. Today the
-        // device layout already matches Body so this is a straight download; a solver
-        // with a different internal layout would transform here.
+        // Convert the device's representation back into the canonical State, reassembling
+        // Body from the three parallel arrays.
         void materialize() const
         {
             NBODY_PROFILE_ZONE();

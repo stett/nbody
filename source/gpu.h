@@ -24,6 +24,28 @@ namespace nbody
         int wrap = 1;
     };
 
+    // The device's view of the bodies, as three parallel arrays rather than one array of
+    // Body. Each must match the like-named struct in shaders/include/common.glsl field for
+    // field. The 16-byte grouping is deliberate: a bare float[3] array would leave vec3
+    // reads straddling cache lines, and std430 would pad each element back up anyway.
+    struct BodyPosRadius
+    {
+        float pos[3];
+        float radius;
+    };
+
+    struct BodyVelMass
+    {
+        float vel[3];
+        float mass;
+    };
+
+    struct BodyAcc
+    {
+        float acc[3];
+        float __pad;
+    };
+
     struct Buffer
     {
         // `size` is the allocated capacity, which only ever grows. `used` is how many
@@ -41,8 +63,9 @@ namespace nbody
 
         // Persistent mapping of `memory`, established by allocate() and valid whenever
         // `size` is non-zero. Null for an empty allocation, and for device-local memory
-        // that was never host-visible in the first place -- write() and read() are only
-        // meaningful on a staging buffer.
+        // that was never host-visible in the first place. Callers that de-interleave on the
+        // way through -- GpuDevice::write() and read() -- address it directly rather than
+        // paying for a second copy through write() below.
         void* mapped = nullptr;
 
         Buffer(
@@ -62,9 +85,6 @@ namespace nbody
 
         // copy data to the buffer, potentially resizing. requires host-visible memory
         void write(const void* data, size_t data_size);
-
-        // copy data from the buffer. requires host-visible memory
-        void read(void* data, size_t data_size) const;
     };
 
     // A vulkan compute device plus the pipelines the simulation runs on it. Owned by
@@ -121,9 +141,16 @@ namespace nbody
         vk::raii::Pipeline pipeline_accelerate;
         // The buffers the shaders read are device-local and not mappable. The host reaches
         // them only through the staging pair, which the command buffer copies to and from.
-        nbody::Buffer buffer_bodies;
+        //
+        // The body fields are split across three buffers so a dispatch pulls in only what it
+        // reads: accelerate() never touches velocity, and integrate() never touches radius.
+        nbody::Buffer buffer_pos_radius;
+        nbody::Buffer buffer_vel_mass;
+        nbody::Buffer buffer_acc;
         nbody::Buffer buffer_nodes;
-        nbody::Buffer staging_bodies;
+        nbody::Buffer staging_pos_radius;
+        nbody::Buffer staging_vel_mass;
+        nbody::Buffer staging_acc;
         nbody::Buffer staging_nodes;
 
         // Set by write(), consumed by the next command buffer: staging holds bodies the

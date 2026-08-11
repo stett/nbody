@@ -6,15 +6,38 @@
 
 layout(local_size_x = 256) in;
 
-// must match nbody::Body (include/nbody/body.h) field for field
-struct Body
+// The bodies, split into parallel arrays so each dispatch reads only the fields it needs.
+// Each struct must match the like-named one in source/gpu.h field for field, and the
+// bindings must match make_descriptor_set_layout(). A stage may leave a binding
+// undeclared -- integrate never reads the nodes at binding 3.
+struct BodyPosRadius
 {
     vec3 pos;
     float radius;
+};
+
+struct BodyVelMass
+{
     vec3 vel;
     float mass;
+};
+
+struct BodyAcc
+{
     vec3 acc;
     float __pad;
+};
+
+layout(std430, binding = 0) buffer PosRadiusBuffer {
+    BodyPosRadius pos_radius[];
+};
+
+layout(std430, binding = 1) buffer VelMassBuffer {
+    BodyVelMass vel_mass[];
+};
+
+layout(std430, binding = 2) buffer AccBuffer {
+    BodyAcc accs[];
 };
 
 // must match nbody::bh::Node (include/nbody/bhtree.h) field for field

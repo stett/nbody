@@ -3,11 +3,7 @@
 
 #include "common.glsl"
 
-layout(std430, binding = 0) buffer Bodies {
-    Body bodies[];
-};
-
-layout(std430, binding = 1) buffer Nodes {
+layout(std430, binding = 3) buffer Nodes {
     Node nodes[];
 };
 
@@ -49,7 +45,7 @@ vec3 accelerate_n2(vec3 pos, float radius)
     vec3 acc = vec3(0);
     for (uint i = 0; i < pc.num_bodies; ++i)
     {
-        acc += accelerate(pos, radius, bodies[i].pos, bodies[i].mass);
+        acc += accelerate(pos, radius, pos_radius[i].pos, vel_mass[i].mass);
     }
     return acc;
 }
@@ -103,12 +99,12 @@ void main() {
         return;
 
     // get the current state of this body
-    vec3 pos = bodies[i].pos;
-    float radius = bodies[i].radius;
+    vec3 pos = pos_radius[i].pos;
+    float radius = pos_radius[i].radius;
 
     // compute the acceleration at this position
     if (pc.mode == N2)
-        bodies[i].acc = accelerate_n2(pos, radius);
+        accs[i].acc = accelerate_n2(pos, radius);
     else if (pc.mode == NLogN)
-        bodies[i].acc = accelerate_nlogn(pos, radius);
+        accs[i].acc = accelerate_nlogn(pos, radius);
 }
