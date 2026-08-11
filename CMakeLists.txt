@@ -30,7 +30,11 @@ message(STATUS "Vulkan_VERSION: ${Vulkan_VERSION}")
 # set up compile options
 target_compile_features(nbody PRIVATE cxx_std_20)
 if (MSVC)
-    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /MD")
+    # Nothing here selects the runtime library. CMake resolves that into the RuntimeLibrary
+    # property from CMAKE_MSVC_RUNTIME_LIBRARY, which already defaults to the DLL runtime,
+    # and which an enclosing project can set once for every target it builds. Pinning /MD
+    # here achieved that same default and would have quietly fought any project that wanted
+    # otherwise.
 
     # Let the force law compile to the instructions the hardware actually has.
     #
