@@ -83,6 +83,11 @@ namespace nbody
         void integrate(float dt, float size, bool wrap);
         void accelerate(float theta, float gravity, Mode mode);
 
+        // Accelerate and integrate in a single submission, ordered by a pipeline barrier.
+        // Equivalent to accelerate() followed by integrate(), but without the host round
+        // trip between them; prefer it whenever both halves are wanted.
+        void step(float dt, float theta, float gravity, Mode mode, float size, bool wrap);
+
     private:
 
         // RAII vk objects
@@ -99,7 +104,6 @@ namespace nbody
 
         vk::raii::CommandPool command_pool;
         vk::raii::CommandBuffer command_buffer;
-        vk::raii::Semaphore semaphore;
         vk::raii::DescriptorPool descriptor_pool;
         vk::raii::DescriptorSetLayout descriptor_set_layout;
         vk::raii::DescriptorSet descriptor_set;
@@ -143,6 +147,13 @@ namespace nbody
         { return std::move(make_shader(spv, size)); }
 
         vk::raii::Pipeline make_pipeline(vk::raii::ShaderModule& shader);
+
+        // command buffer recording and submission
+        void record_dispatch(vk::raii::Pipeline& pipeline);
+        void record_dispatch_barrier();
+        void submit_and_wait(bool frame_end);
+        void set_accelerate_constants(float theta, float gravity, Mode mode);
+        void set_integrate_constants(float dt, float size, bool wrap);
 
         template <typename Type>
         nbody::Buffer make_buffer(

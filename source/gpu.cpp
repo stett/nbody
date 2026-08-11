@@ -77,7 +77,6 @@ GpuDevice::GpuDevice()
     , fence(device, vk::FenceCreateInfo{ })
     , command_pool(make_command_pool())
     , command_buffer(make_command_buffer())
-    , semaphore(device.createSemaphore({ }))
     , descriptor_pool(make_descriptor_pool())
     , descriptor_set_layout(make_descriptor_set_layout())
     , descriptor_set(make_descriptor_set())
@@ -337,24 +336,48 @@ void GpuDevice::read(std::vector<Body>& bodies)
     buffer_bodies.read(bodies.data(), std::min<size_t>(want, buffer_bodies.used));
 }
 
-void GpuDevice::integrate(const float dt, const float size, const bool wrap)
+// Bind and dispatch one compute pipeline over the current body count. Records only --
+// the caller decides what else goes in the command buffer and when it is submitted.
+void GpuDevice::record_dispatch(vk::raii::Pipeline& pipeline)
 {
-    // update relevant push constants
-    push_constants.dt = dt;
-    push_constants.size = size;
-    push_constants.wrap = wrap ? 1 : 0;
-
-    // set up command to run the integrate pipeline
-    command_buffer.begin({ });
-    command_buffer.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline_integrate);
+    command_buffer.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline);
     command_buffer.bindDescriptorSets(vk::PipelineBindPoint::eCompute, pipeline_layout, 0, { descriptor_set }, { });
     command_buffer.pushConstants<PushConstants>(pipeline_layout, vk::ShaderStageFlagBits::eCompute, 0, push_constants);
     const uint32_t group_count = (push_constants.num_bodies + 255) / 256;
     command_buffer.dispatch(group_count, 1, 1);
-    command_buffer.end();
+}
 
-    // submit the command and wait for the result
+// Order one compute dispatch after another within a command buffer.
+//
+// Consecutive dispatches are otherwise free to overlap: submission order constrains when
+// work *starts*, never when it finishes, and no memory dependency is implied. Since
+// accelerate writes bodies[].acc and integrate reads it, the two need an explicit
+// dependency or integrate can read accelerations that were never written. The barrier
+// supplies both halves -- execution (all of the first dispatch completes before any of the
+// second begins) and memory (the writes are made available and visible).
+void GpuDevice::record_dispatch_barrier()
+{
+    const vk::MemoryBarrier barrier(
+        vk::AccessFlagBits::eShaderWrite,
+        vk::AccessFlagBits::eShaderRead);
+
+    command_buffer.pipelineBarrier(
+        vk::PipelineStageFlagBits::eComputeShader,
+        vk::PipelineStageFlagBits::eComputeShader,
+        { },
+        barrier,
+        { },
+        { });
+}
+
+// Submit the recorded command buffer and block until the device has finished it.
+//
+// `frame_end` closes a frame for capture tools. Only the last submission of a simulation
+// step should set it, or a tool would see each dispatch as a frame of its own.
+void GpuDevice::submit_and_wait(const bool frame_end)
+{
     device.resetFences({ *fence });
+
     vk::SubmitInfo submit_info(
         0, // wait semaphore count
         nullptr, // wait semaphores
@@ -362,10 +385,6 @@ void GpuDevice::integrate(const float dt, const float size, const bool wrap)
         1, // command buffer count
         &*command_buffer);
 
-    // Solver::update() runs accelerate() then integrate(), so this is the last submit of a
-    // simulation step and the natural place to close the frame. A tool capturing between
-    // boundaries therefore sees one whole step: the accelerate dispatch and this one.
-    //
     // The buffer is named as the frame's output so a tool can report what the frame
     // produced; imageCount stays 0, since a compute-only frame renders to nothing.
     vk::FrameBoundaryEXT frame_boundary;
@@ -373,7 +392,7 @@ void GpuDevice::integrate(const float dt, const float size, const bool wrap)
     frame_boundary.frameID = frame_id;
     frame_boundary.bufferCount = 1;
     frame_boundary.pBuffers = &*buffer_bodies.buffer;
-    if (frame_boundary_enabled)
+    if (frame_end && frame_boundary_enabled)
     {
         submit_info.pNext = &frame_boundary;
         ++frame_id;
@@ -384,33 +403,74 @@ void GpuDevice::integrate(const float dt, const float size, const bool wrap)
     assert(result == vk::Result::eSuccess);
 }
 
-void GpuDevice::accelerate(const float theta, const float gravity, const Mode mode)
+void GpuDevice::set_accelerate_constants(const float theta, const float gravity, const Mode mode)
 {
-    // update relevant push constants
     push_constants.theta = theta;
     push_constants.G = gravity;   // or set_gravity() would silently not reach the device
     push_constants.mode = mode;
+}
 
-    // set up command to run the accelerate pipeline
+void GpuDevice::set_integrate_constants(const float dt, const float size, const bool wrap)
+{
+    push_constants.dt = dt;
+    push_constants.size = size;
+    push_constants.wrap = wrap ? 1 : 0;
+}
+
+void GpuDevice::integrate(const float dt, const float size, const bool wrap)
+{
+    set_integrate_constants(dt, size, wrap);
+
     command_buffer.begin({ });
-    command_buffer.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline_accelerate);
-    command_buffer.bindDescriptorSets(vk::PipelineBindPoint::eCompute, pipeline_layout, 0, { descriptor_set }, { });
-    command_buffer.pushConstants<PushConstants>(pipeline_layout, vk::ShaderStageFlagBits::eCompute, 0, push_constants);
-    const uint32_t group_count = (push_constants.num_bodies + 255) / 256;
-    command_buffer.dispatch(group_count, 1, 1);
+    record_dispatch(pipeline_integrate);
     command_buffer.end();
 
-    // submit the command and wait for the result
-    device.resetFences({ *fence });
-    const vk::SubmitInfo submit_info(
-        0, // wait semaphore count
-        nullptr, // wait semaphores
-        nullptr, // wait destination stage mask flags
-        1, // command buffer count
-        &*command_buffer);
-    queue.submit(submit_info, *fence);
-    const vk::Result result = device.waitForFences({ *fence }, VK_TRUE, UINT64_MAX);
-    assert(result == vk::Result::eSuccess);
+    submit_and_wait(true);
+}
+
+void GpuDevice::accelerate(const float theta, const float gravity, const Mode mode)
+{
+    set_accelerate_constants(theta, gravity, mode);
+
+    command_buffer.begin({ });
+    record_dispatch(pipeline_accelerate);
+    command_buffer.end();
+
+    submit_and_wait(false);
+}
+
+// A whole simulation step in one submission.
+//
+// Running accelerate() and integrate() back to back costs two round trips: the host blocks
+// on the first fence before it has even recorded the second dispatch, so the device
+// finishes accelerating and then idles while the host wakes up and submits again. Recording
+// both against one barrier keeps the ordering guarantee the fence was providing while
+// leaving the device with work already queued behind the first dispatch.
+//
+// The separate entry points remain for callers that genuinely need one half on its own.
+void GpuDevice::step(
+    const float dt,
+    const float theta,
+    const float gravity,
+    const Mode mode,
+    const float size,
+    const bool wrap)
+{
+    command_buffer.begin({ });
+
+    set_accelerate_constants(theta, gravity, mode);
+    record_dispatch(pipeline_accelerate);
+
+    record_dispatch_barrier();
+
+    // Push constants are recorded into the command buffer, so re-pushing here applies to
+    // the second dispatch only and leaves the first one's values alone.
+    set_integrate_constants(dt, size, wrap);
+    record_dispatch(pipeline_integrate);
+
+    command_buffer.end();
+
+    submit_and_wait(true);
 }
 
 nbody::Buffer::Buffer(
