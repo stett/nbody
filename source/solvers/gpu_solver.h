@@ -11,11 +11,6 @@ namespace nbody
     // Runs the simulation on a vulkan compute device, in either barnes-hut or
     // brute-force mode, over one interleaved array of Body. The baseline GpuSolverSplit
     // (solvers/gpu_solver_split.h) is measured against; everything here moves every step.
-    //
-    // Unlike the CPU solvers this one has a representation of its own -- the device
-    // buffers -- so it is the first real user of the standard-format conversion:
-    // materialize() brings State::bodies back in line with the device, and ingest()
-    // pushes a caller's mutation the other way.
     class GpuSolver final : public Solver
     {
     public:

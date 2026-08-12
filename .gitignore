@@ -5,3 +5,4 @@ cmake-build*
 */.DS_Store
 # CPM cache for the tracy profiler's dependencies
 .cpm-cache/
+build-soa

@@ -11,12 +11,10 @@
 namespace nbody
 {
     // Runs the simulation on a vulkan compute device, in either barnes-hut or
-    // brute-force mode.
+    // brute-force mode. The difference from GpuSolver is that rather than interleaving
+    // body data in an AoS, this solver splits it out into three buffers - an SoA.
     //
-    // Unlike the CPU solvers this one has a representation of its own -- the device
-    // buffers -- so it is the first real user of the standard-format conversion:
-    // materialize() brings State::bodies back in line with the device, and ingest()
-    // pushes a caller's mutation the other way.
+    // These contain { pos, mass }, { vel, rad }, { acc }.
     class GpuSolverSplit final : public Solver
     {
     public:
