@@ -6,6 +6,7 @@
 
 #if defined(NBODY_PROFILE)
 
+#include <cstring>
 #include <tracy/Tracy.hpp>
 
 #define NBODY_PROFILE_ZONE()            ZoneScoped
@@ -14,6 +15,14 @@
 #define NBODY_PROFILE_PLOT(name, value) TracyPlot(name, value)
 #define NBODY_PROFILE_THREAD(name)      tracy::SetThreadName(name)
 
+// Annotate the enclosing zone with a run-time string, for what a zone name cannot carry
+// because it has to be a compile-time literal.
+#define NBODY_PROFILE_ZONE_TEXT(cstr)                                   \
+    do {                                                                \
+        const char* const nbody_zone_text = (cstr);                     \
+        ZoneText(nbody_zone_text, std::strlen(nbody_zone_text));        \
+    } while (false)
+
 #else
 
 #define NBODY_PROFILE_ZONE()            ((void)0)
@@ -21,5 +30,6 @@
 #define NBODY_PROFILE_FRAME()           ((void)0)
 #define NBODY_PROFILE_PLOT(name, value) ((void)0)
 #define NBODY_PROFILE_THREAD(name)      ((void)0)
+#define NBODY_PROFILE_ZONE_TEXT(cstr)   ((void)0)
 
 #endif

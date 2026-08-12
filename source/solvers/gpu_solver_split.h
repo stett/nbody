@@ -77,7 +77,7 @@ namespace nbody
         {
             NBODY_PROFILE_ZONE();
             // An empty body array cannot be bound: Buffer::allocate() leaves a null
-            // vk::Buffer at size 0, and prepare() would bind it with range 0 --
+            // vk::Buffer at size 0, and prepare_split() would bind it with range 0 --
             // VUID-VkDescriptorBufferInfo-range-00341, and undefined behaviour without
             // the nullDescriptor feature.
             if (_state->bodies.empty())
