@@ -9,9 +9,8 @@ namespace nbody::detail
     // Rebuild the barnes-hut acceleration tree from scratch. Shared by the CPU and GPU
     // barnes-hut solvers so the two cannot drift apart in how the tree is constructed.
     //
-    // Templated on the element only so the GPU solver can build straight out of its staging
-    // positions: `Body` and `BodyPosMass` both expose .pos and .mass, and insisting on the
-    // former would mean re-interleaving a million bodies for the sake of two fields.
+    // Templated on the element so the GPU solver can build straight out of its staging
+    // positions: Body and BodyPosMass both expose .pos and .mass.
     template <typename Item>
     void build_tree(bh::Tree& tree, const Item* items, const size_t count, const float size)
     {

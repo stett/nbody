@@ -11,6 +11,8 @@
 #include "nbody/profile.h"
 #include "shaders/accelerate.h"
 #include "shaders/integrate.h"
+#include "shaders/accelerate_split.h"
+#include "shaders/integrate_split.h"
 
 using nbody::GpuDevice;
 
@@ -80,21 +82,34 @@ GpuDevice::GpuDevice()
     , command_pool(make_command_pool())
     , command_buffer(make_command_buffer())
     , descriptor_pool(make_descriptor_pool())
-    , descriptor_set_layout(make_descriptor_set_layout())
-    , descriptor_set(make_descriptor_set())
-    , pipeline_layout(make_pipeline_layout())
-    , shader_integrate(make_shader(spv_integrate))
-    , shader_accelerate(make_shader(spv_accelerate))
-    , pipeline_integrate(make_pipeline(shader_integrate))
-    , pipeline_accelerate(make_pipeline(shader_accelerate))
+    , buffer_nodes(make_device_buffer<bh::Node>(0))
+    , staging_nodes(make_staging_buffer<bh::Node>(0))
+
+    // interleaved: bodies at binding 0, nodes at binding 1
+    , descriptor_set_layout_interleaved(make_descriptor_set_layout(2))
+    , descriptor_set_interleaved(make_descriptor_set(descriptor_set_layout_interleaved))
+    , pipeline_layout_interleaved(make_pipeline_layout(descriptor_set_layout_interleaved))
+    , shader_integrate_interleaved(make_shader(spv_integrate))
+    , shader_accelerate_interleaved(make_shader(spv_accelerate))
+    , pipeline_integrate_interleaved(make_pipeline(shader_integrate_interleaved, pipeline_layout_interleaved))
+    , pipeline_accelerate_interleaved(make_pipeline(shader_accelerate_interleaved, pipeline_layout_interleaved))
+    , buffer_bodies(make_device_buffer<Body>(0))
+    , staging_bodies(make_staging_buffer<Body>(0))
+
+    // split: three body arrays at bindings 0-2, nodes at binding 3
+    , descriptor_set_layout_split(make_descriptor_set_layout(4))
+    , descriptor_set_split(make_descriptor_set(descriptor_set_layout_split))
+    , pipeline_layout_split(make_pipeline_layout(descriptor_set_layout_split))
+    , shader_integrate_split(make_shader(spv_integrate_split))
+    , shader_accelerate_split(make_shader(spv_accelerate_split))
+    , pipeline_integrate_split(make_pipeline(shader_integrate_split, pipeline_layout_split))
+    , pipeline_accelerate_split(make_pipeline(shader_accelerate_split, pipeline_layout_split))
     , buffer_pos_mass(make_device_buffer<BodyPosMass>(0))
     , buffer_vel_radius(make_device_buffer<BodyVelRadius>(0))
     , buffer_acc(make_device_buffer<BodyAcc>(0))
-    , buffer_nodes(make_device_buffer<bh::Node>(0))
     , staging_pos_mass(make_staging_buffer<BodyPosMass>(0))
     , staging_vel_radius(make_staging_buffer<BodyVelRadius>(0))
     , staging_acc(make_staging_buffer<BodyAcc>(0))
-    , staging_nodes(make_staging_buffer<bh::Node>(0))
 { }
 
 std::string GpuDevice::probe() noexcept
@@ -251,41 +266,37 @@ vk::raii::CommandBuffer GpuDevice::make_command_buffer()
 
 vk::raii::DescriptorPool GpuDevice::make_descriptor_pool()
 {
-    // The pool must cover every descriptor in every set allocated from it. We allocate
-    // one set from the layout below, which has four storage buffer bindings, so we need
-    // four storage buffer descriptors. Under-sizing this fails with ErrorOutOfPoolMemory
-    // on drivers that enforce it (e.g. MoltenVK).
+    // The pool must cover every descriptor in every set allocated from it: the interleaved
+    // layout's two bindings and the split layout's four. Under-sizing this fails with
+    // ErrorOutOfPoolMemory on drivers that enforce it (e.g. MoltenVK).
     std::vector<vk::DescriptorPoolSize> pool_sizes = {
-        vk::DescriptorPoolSize(vk::DescriptorType::eStorageBuffer, 4)
+        vk::DescriptorPoolSize(vk::DescriptorType::eStorageBuffer, 2 + 4)
     };
-    return { device, { { vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet }, 1, pool_sizes } };
+    return { device, { { vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet }, 2, pool_sizes } };
 }
 
-vk::raii::DescriptorSetLayout GpuDevice::make_descriptor_set_layout()
+// Consecutive storage buffers from binding 0: bodies then nodes, or three body arrays then
+// nodes. The nodes sit last because neither integrate stage declares them.
+vk::raii::DescriptorSetLayout GpuDevice::make_descriptor_set_layout(const uint32_t num_bindings)
 {
-    // Bindings 0-2 are the split body arrays, binding 3 the barnes-hut nodes. A shader is
-    // free to leave one undeclared -- integrate.comp never looks at the nodes.
-    std::vector<vk::DescriptorSetLayoutBinding> bindings =
-    {
-        { 0, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eCompute },
-        { 1, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eCompute },
-        { 2, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eCompute },
-        { 3, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eCompute },
-    };
+    std::vector<vk::DescriptorSetLayoutBinding> bindings;
+    bindings.reserve(num_bindings);
+    for (uint32_t i = 0; i < num_bindings; ++i)
+        bindings.emplace_back(i, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eCompute);
 
     return { device, { { }, bindings } };
 }
 
-vk::raii::DescriptorSet GpuDevice::make_descriptor_set()
+vk::raii::DescriptorSet GpuDevice::make_descriptor_set(vk::raii::DescriptorSetLayout& layout)
 {
-    vk::DescriptorSetAllocateInfo descriptorSetAllocateInfo(descriptor_pool, *descriptor_set_layout);
+    vk::DescriptorSetAllocateInfo descriptorSetAllocateInfo(descriptor_pool, *layout);
     return std::move(vk::raii::DescriptorSets(device, descriptorSetAllocateInfo).front());
 }
 
-vk::raii::PipelineLayout GpuDevice::make_pipeline_layout()
+vk::raii::PipelineLayout GpuDevice::make_pipeline_layout(vk::raii::DescriptorSetLayout& layout)
 {
     vk::PushConstantRange push_constant_range(vk::ShaderStageFlagBits::eCompute, 0, sizeof(PushConstants));
-    return { device, { { }, { *descriptor_set_layout }, push_constant_range } };
+    return { device, { { }, { *layout }, push_constant_range } };
 }
 
 vk::raii::ShaderModule GpuDevice::make_shader(const unsigned char* spv, size_t size)
@@ -293,13 +304,184 @@ vk::raii::ShaderModule GpuDevice::make_shader(const unsigned char* spv, size_t s
     return { device, { { }, size, reinterpret_cast<const uint32_t*>(spv) } };
 }
 
-vk::raii::Pipeline GpuDevice::make_pipeline(vk::raii::ShaderModule& shader)
+vk::raii::Pipeline GpuDevice::make_pipeline(vk::raii::ShaderModule& shader, vk::raii::PipelineLayout& layout)
 {
     // create the pipeline
     vk::PipelineShaderStageCreateInfo shader_stage_create_info({ }, vk::ShaderStageFlagBits::eCompute, *shader, "main");
-    vk::ComputePipelineCreateInfo compute_pipeline_create_info({ }, shader_stage_create_info, *pipeline_layout, { }, -1);
+    vk::ComputePipelineCreateInfo compute_pipeline_create_info({ }, shader_stage_create_info, *layout, { }, -1);
     return { device, nullptr, compute_pipeline_create_info };
 }
+
+// ---- interleaved layout -----------------------------------------------------------------
+//
+// The baseline as it stood before the split, kept separate rather than sharing machinery so
+// that a measurement of one says nothing about the other.
+
+void GpuDevice::write_interleaved(const std::vector<Body>& bodies, const std::vector<bh::Node>& nodes)
+{
+    NBODY_PROFILE_ZONE();
+    // Land the data in host memory and size the device buffers to match. The copy across
+    // is recorded into the next command buffer rather than done here, so it runs on the
+    // transfer hardware alongside everything else instead of on this thread.
+    const size_t bodies_bytes = sizeof(Body) * bodies.size();
+    const size_t nodes_bytes = sizeof(bh::Node) * nodes.size();
+
+    staging_bodies.reserve(bodies_bytes);
+    staging_bodies.write(bodies.data(), 0, bodies_bytes);
+    staging_nodes.reserve(nodes_bytes);
+    staging_nodes.write(nodes.data(), 0, nodes_bytes);
+    buffer_bodies.reserve(bodies_bytes);
+    buffer_nodes.reserve(nodes_bytes);
+    upload_pending_interleaved = true;
+
+    // update descriptor sets -- the shaders bind the device buffers, never the staging pair
+    const std::array<vk::DescriptorBufferInfo, 2> buffer_infos
+    {
+        vk::DescriptorBufferInfo{ buffer_bodies.buffer, 0, buffer_bodies.size },
+        vk::DescriptorBufferInfo{ buffer_nodes.buffer, 0, buffer_nodes.size },
+    };
+
+    std::array<vk::WriteDescriptorSet, 2> descriptor_set_writes;
+    for (uint32_t binding = 0; binding < descriptor_set_writes.size(); ++binding)
+        descriptor_set_writes[binding] = vk::WriteDescriptorSet{
+            *descriptor_set_interleaved,
+            binding,
+            0, // starting array element
+            1, // descriptor count
+            vk::DescriptorType::eStorageBuffer,
+            nullptr,
+            &buffer_infos[binding]
+        };
+
+    device.updateDescriptorSets(descriptor_set_writes, { });
+
+    // update push constant values
+    push_constants.num_bodies = (int)bodies.size();
+    push_constants.num_nodes = (int)nodes.size();
+}
+
+void GpuDevice::read_interleaved(std::vector<Body>& bodies)
+{
+    NBODY_PROFILE_ZONE();
+    // Copy back only what both sides can hold: the allocation only ever grows, so reading
+    // all of it overruns `bodies` whenever the count has shrunk.
+    const size_t want = std::min<size_t>(bodies.size() * sizeof(Body), staging_bodies.used);
+    if (want == 0) { return; }
+    std::memcpy(bodies.data(), staging_bodies.at(0), want);
+}
+
+void GpuDevice::record_upload_interleaved()
+{
+    if (!upload_pending_interleaved) { return; }
+    upload_pending_interleaved = false;
+
+    if (staging_bodies.used > 0)
+        command_buffer.copyBuffer(
+            staging_bodies.buffer, buffer_bodies.buffer,
+            vk::BufferCopy(0, 0, staging_bodies.used));
+
+    if (staging_nodes.used > 0)
+        command_buffer.copyBuffer(
+            staging_nodes.buffer, buffer_nodes.buffer,
+            vk::BufferCopy(0, 0, staging_nodes.used));
+
+    staging_bodies.clear_dirty();
+    staging_nodes.clear_dirty();
+
+    const vk::MemoryBarrier barrier(
+        vk::AccessFlagBits::eTransferWrite,
+        vk::AccessFlagBits::eShaderRead);
+
+    command_buffer.pipelineBarrier(
+        vk::PipelineStageFlagBits::eTransfer,
+        vk::PipelineStageFlagBits::eComputeShader,
+        { }, barrier, { }, { });
+}
+
+void GpuDevice::record_readback_interleaved()
+{
+    if (buffer_bodies.used == 0) { return; }
+
+    const vk::MemoryBarrier before(
+        vk::AccessFlagBits::eShaderWrite,
+        vk::AccessFlagBits::eTransferRead);
+
+    command_buffer.pipelineBarrier(
+        vk::PipelineStageFlagBits::eComputeShader,
+        vk::PipelineStageFlagBits::eTransfer,
+        { }, before, { }, { });
+
+    command_buffer.copyBuffer(
+        buffer_bodies.buffer, staging_bodies.buffer,
+        vk::BufferCopy(0, 0, buffer_bodies.used));
+
+    // Make the transfer visible to the host reads that follow the fence.
+    const vk::MemoryBarrier after(
+        vk::AccessFlagBits::eTransferWrite,
+        vk::AccessFlagBits::eHostRead);
+
+    command_buffer.pipelineBarrier(
+        vk::PipelineStageFlagBits::eTransfer,
+        vk::PipelineStageFlagBits::eHost,
+        { }, after, { }, { });
+}
+
+void GpuDevice::integrate_interleaved(const float dt, const float size, const bool wrap)
+{
+    set_integrate_constants(dt, size, wrap);
+
+    command_buffer.begin({ });
+    record_upload_interleaved();
+    record_dispatch(pipeline_integrate_interleaved, pipeline_layout_interleaved, descriptor_set_interleaved);
+    record_readback_interleaved();
+    command_buffer.end();
+
+    submit_and_wait(true, buffer_bodies.buffer);
+}
+
+void GpuDevice::accelerate_interleaved(const float theta, const float gravity, const Mode mode)
+{
+    set_accelerate_constants(theta, gravity, mode);
+
+    command_buffer.begin({ });
+    record_upload_interleaved();
+    record_dispatch(pipeline_accelerate_interleaved, pipeline_layout_interleaved, descriptor_set_interleaved);
+    record_readback_interleaved();
+    command_buffer.end();
+
+    submit_and_wait(false, buffer_bodies.buffer);
+}
+
+void GpuDevice::step_interleaved(
+    const float dt,
+    const float theta,
+    const float gravity,
+    const Mode mode,
+    const float size,
+    const bool wrap)
+{
+    NBODY_PROFILE_ZONE();
+
+    command_buffer.begin({ });
+    record_upload_interleaved();
+
+    set_accelerate_constants(theta, gravity, mode);
+    record_dispatch(pipeline_accelerate_interleaved, pipeline_layout_interleaved, descriptor_set_interleaved);
+
+    record_dispatch_barrier();
+
+    // Push constants are recorded into the command buffer, so re-pushing here applies to
+    // the second dispatch only and leaves the first one's values alone.
+    set_integrate_constants(dt, size, wrap);
+    record_dispatch(pipeline_integrate_interleaved, pipeline_layout_interleaved, descriptor_set_interleaved);
+
+    record_readback_interleaved();
+    command_buffer.end();
+
+    submit_and_wait(true, buffer_bodies.buffer);
+}
+
+// ---- split layout -----------------------------------------------------------------------
 
 void GpuDevice::reserve_bodies(const size_t num_bodies)
 {
@@ -314,17 +496,14 @@ GpuDevice::BodyMapping GpuDevice::map_bodies(const size_t offset, const size_t c
 {
     NBODY_PROFILE_ZONE();
 
-    // Mark here, on the calling thread, so that the workers filling the returned arrays
-    // never touch shared state. Doing it per block inside the parallel loop would be a
-    // race on the dirty range.
+    // Marked here, on the calling thread: doing it per block inside the parallel loop
+    // would race on the dirty range.
     staging_pos_mass.dirty(sizeof(BodyPosMass) * offset, sizeof(BodyPosMass) * count);
     staging_vel_radius.dirty(sizeof(BodyVelRadius) * offset, sizeof(BodyVelRadius) * count);
     staging_acc.dirty(sizeof(BodyAcc) * offset, sizeof(BodyAcc) * count);
 
-    // The host is about to make staging authoritative for these arrays, and record_upload()
-    // will hand the device the same bytes, so both sides end up agreeing -- but only for a
-    // map that covers everything. A partial map leaves the rest of each array exactly as
-    // valid, or as stale, as it already was.
+    // The upload hands the device these same bytes, so both sides end up agreeing -- but
+    // only for a map covering everything. A partial one leaves the rest as it found it.
     if (offset == 0 && count == staged_body_count())
         staging_valid = Readback::All;
 
@@ -342,8 +521,7 @@ void GpuDevice::write_nodes(const std::vector<bh::Node>& nodes)
     NBODY_PROFILE_ZONE();
     const size_t bytes = sizeof(bh::Node) * nodes.size();
 
-    // Sized here rather than by the caller: unlike the bodies, which the host fills in
-    // place, the tree arrives as a finished vector and is rewritten whole every frame.
+    // Sized here rather than by the caller: the tree arrives finished and is rewritten whole.
     staging_nodes.reserve(bytes);
     staging_nodes.write(nodes.data(), 0, bytes);
     push_constants.num_nodes = static_cast<int>(nodes.size());
@@ -373,29 +551,22 @@ void GpuDevice::download(const Readback want)
 {
     NBODY_PROFILE_ZONE();
 
-    // Only what the last submission did not already bring back. In the steady state the
-    // step's own readback covers everything asked for here and this costs nothing.
+    // Only what the last submission did not already bring back.
     const Readback missing = want & ~staging_valid;
     if (!any(missing)) { return; }
 
-    prepare();
+    prepare_split();
     command_buffer.begin({ });
-    record_readback(missing);
+    record_readback_split(missing);
     command_buffer.end();
-    submit_and_wait(false);
+    submit_and_wait(false, buffer_pos_mass.buffer);
 }
 
-// Bring the device buffers up to the size of their staging counterparts, and rebind if any
-// of them moved.
-//
-// Deliberately outside command buffer recording. A dispatch that uploads nothing still has
-// to bind valid storage, and folding this into record_upload() -- which returns early when
-// there is nothing to copy -- would leave the descriptor set pointing at the previous,
-// destroyed allocation.
-void GpuDevice::prepare()
+// Deliberately outside command buffer recording: a dispatch that uploads nothing still has
+// to bind valid storage, and record_upload_split() returns early when there is nothing to
+// copy, which would leave the descriptor set pointing at a destroyed allocation.
+void GpuDevice::prepare_split()
 {
-    // A grown buffer is a fresh allocation holding nothing, so the copy that follows has to
-    // cover the whole array rather than just the range the host touched.
     const auto grow = [](nbody::Buffer& device_buffer, const nbody::Buffer& staging)
     {
         return device_buffer.reserve(staging.used);
@@ -406,20 +577,19 @@ void GpuDevice::prepare()
     moved |= grow(buffer_vel_radius, staging_vel_radius);
     moved |= grow(buffer_acc, staging_acc);
     moved |= grow(buffer_nodes, staging_nodes);
-    descriptors_stale |= moved;
+    descriptors_stale_split |= moved;
 
     if (moved)
     {
-        // Everything the device holds is gone with the old allocations, so nothing partial
-        // can be sent: widen each pending upload to the full array.
+        // The old allocations took their contents with them, so nothing partial can be sent.
         staging_pos_mass.dirty(0, staging_pos_mass.used);
         staging_vel_radius.dirty(0, staging_vel_radius.used);
         staging_acc.dirty(0, staging_acc.used);
         staging_nodes.dirty(0, staging_nodes.used);
     }
 
-    if (!descriptors_stale) { return; }
-    descriptors_stale = false;
+    if (!descriptors_stale_split) { return; }
+    descriptors_stale_split = false;
 
     // the shaders bind the device buffers, never the staging pair
     const std::array<vk::DescriptorBufferInfo, 4> buffer_infos
@@ -433,7 +603,7 @@ void GpuDevice::prepare()
     std::array<vk::WriteDescriptorSet, 4> descriptor_set_writes;
     for (uint32_t binding = 0; binding < descriptor_set_writes.size(); ++binding)
         descriptor_set_writes[binding] = vk::WriteDescriptorSet{
-            *descriptor_set,
+            *descriptor_set_split,
             binding,
             0, // starting array element
             1, // descriptor count
@@ -445,16 +615,14 @@ void GpuDevice::prepare()
     device.updateDescriptorSets(descriptor_set_writes, { });
 }
 
-// Copy the ranges the host has touched into the device buffers, and order the shaders after
-// them.
-void GpuDevice::record_upload()
+// Copy the ranges the host has touched, and order the shaders after them.
+void GpuDevice::record_upload_split()
 {
     const auto copy = [this](nbody::Buffer& from, const nbody::Buffer& to)
     {
         if (!from.is_dirty()) { return false; }
 
-        // Clamp to what is live: a shrink leaves the dirty range describing bytes that are
-        // no longer part of the array.
+        // Clamp to what is live: a shrink can leave the range describing bytes that are not.
         const vk::DeviceSize begin = std::min(from.dirty_begin, from.used);
         const vk::DeviceSize end = std::min(from.dirty_end, from.used);
         from.clear_dirty();
@@ -483,7 +651,7 @@ void GpuDevice::record_upload()
 }
 
 // Bring back the arrays named by `what`, once the shaders are done with them.
-void GpuDevice::record_readback(const Readback what)
+void GpuDevice::record_readback_split(const Readback what)
 {
     if (!any(what) || buffer_pos_mass.used == 0) { return; }
 
@@ -519,7 +687,7 @@ void GpuDevice::record_readback(const Readback what)
     staging_valid = staging_valid | what;
 }
 
-void GpuDevice::record_dispatch(vk::raii::Pipeline& pipeline)
+void GpuDevice::record_dispatch(vk::raii::Pipeline& pipeline, vk::raii::PipelineLayout& pipeline_layout, vk::raii::DescriptorSet& descriptor_set)
 {
     command_buffer.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline);
     command_buffer.bindDescriptorSets(vk::PipelineBindPoint::eCompute, pipeline_layout, 0, { descriptor_set }, { });
@@ -555,7 +723,7 @@ void GpuDevice::record_dispatch_barrier()
 //
 // `frame_end` closes a frame for capture tools. Only the last submission of a simulation
 // step should set it, or a tool would see each dispatch as a frame of its own.
-void GpuDevice::submit_and_wait(const bool frame_end)
+void GpuDevice::submit_and_wait(const bool frame_end, const vk::raii::Buffer& frame_buffer)
 {
     NBODY_PROFILE_ZONE();
     device.resetFences({ *fence });
@@ -573,7 +741,7 @@ void GpuDevice::submit_and_wait(const bool frame_end)
     frame_boundary.flags = vk::FrameBoundaryFlagBitsEXT::eFrameEnd;
     frame_boundary.frameID = frame_id;
     frame_boundary.bufferCount = 1;
-    frame_boundary.pBuffers = &*buffer_pos_mass.buffer;
+    frame_boundary.pBuffers = &*frame_buffer;
     if (frame_end && frame_boundary_enabled)
     {
         submit_info.pNext = &frame_boundary;
@@ -607,36 +775,35 @@ void GpuDevice::set_integrate_constants(const float dt, const float size, const 
 void GpuDevice::integrate(const float dt, const float size, const bool wrap, const Readback readback)
 {
     set_integrate_constants(dt, size, wrap);
-    prepare();
+    prepare_split();
 
-    // The dispatch overwrites the device's positions and velocities, so whatever staging
-    // holds of them is a step out of date until the readback below says otherwise.
+    // The dispatch overwrites positions and velocities, so staging is a step behind on them.
     staging_valid = staging_valid & ~(Readback::Positions | Readback::Velocities);
 
     command_buffer.begin({ });
-    record_upload();
-    record_dispatch(pipeline_integrate);
-    record_readback(readback);
+    record_upload_split();
+    record_dispatch(pipeline_integrate_split, pipeline_layout_split, descriptor_set_split);
+    record_readback_split(readback);
     command_buffer.end();
 
-    submit_and_wait(true);
+    submit_and_wait(true, buffer_pos_mass.buffer);
 }
 
 void GpuDevice::accelerate(const float theta, const float gravity, const Mode mode, const Readback readback)
 {
     set_accelerate_constants(theta, gravity, mode);
-    prepare();
+    prepare_split();
 
     // Only the accelerations are touched; staged positions and velocities stay good.
     staging_valid = staging_valid & ~Readback::Accelerations;
 
     command_buffer.begin({ });
-    record_upload();
-    record_dispatch(pipeline_accelerate);
-    record_readback(readback);
+    record_upload_split();
+    record_dispatch(pipeline_accelerate_split, pipeline_layout_split, descriptor_set_split);
+    record_readback_split(readback);
     command_buffer.end();
 
-    submit_and_wait(false);
+    submit_and_wait(false, buffer_pos_mass.buffer);
 }
 
 // A whole simulation step in one submission.
@@ -659,28 +826,28 @@ void GpuDevice::step(
 {
     NBODY_PROFILE_ZONE();
 
-    prepare();
+    prepare_split();
 
     // Both dispatches together rewrite all three arrays.
     staging_valid = Readback::None;
 
     command_buffer.begin({ });
-    record_upload();
+    record_upload_split();
 
     set_accelerate_constants(theta, gravity, mode);
-    record_dispatch(pipeline_accelerate);
+    record_dispatch(pipeline_accelerate_split, pipeline_layout_split, descriptor_set_split);
 
     record_dispatch_barrier();
 
     // Push constants are recorded into the command buffer, so re-pushing here applies to
     // the second dispatch only and leaves the first one's values alone.
     set_integrate_constants(dt, size, wrap);
-    record_dispatch(pipeline_integrate);
+    record_dispatch(pipeline_integrate_split, pipeline_layout_split, descriptor_set_split);
 
-    record_readback(readback);
+    record_readback_split(readback);
     command_buffer.end();
 
-    submit_and_wait(true);
+    submit_and_wait(true, buffer_pos_mass.buffer);
 }
 
 nbody::Buffer::Buffer(
@@ -737,8 +904,7 @@ bool nbody::Buffer::reserve(const size_t bytes)
     const bool moved = bytes > size;
     if (moved)
     {
-        // The old contents are gone with the old allocation, and so is any record of what
-        // in it still needed sending.
+        // The old contents are gone, and so is any record of what still needed sending.
         allocate(bytes);
         clear_dirty();
     }

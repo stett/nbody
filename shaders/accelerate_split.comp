@@ -1,0 +1,34 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+// Three body arrays take bindings 0-2, so the nodes take binding 3.
+#define NBODY_NODE_BINDING 3
+#include "common.glsl"
+#include "body_split.glsl"
+
+vec3 accelerate_n2(vec3 pos, float radius)
+{
+    vec3 acc = vec3(0);
+    for (uint i = 0; i < pc.num_bodies; ++i)
+    {
+        // One array, not two: pos and mass are the whole of what this loop reads.
+        acc += accelerate(pos, radius, pos_mass[i].pos, pos_mass[i].mass);
+    }
+    return acc;
+}
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= uint(pc.num_bodies))
+        return;
+
+    // radius is read once here, not once per pair, which is why it lives with the velocities
+    vec3 pos = pos_mass[i].pos;
+    float radius = vel_radius[i].radius;
+
+    // compute the acceleration at this position
+    if (pc.mode == N2)
+        accs[i].acc = accelerate_n2(pos, radius);
+    else if (pc.mode == NLogN)
+        accs[i].acc = accelerate_nlogn(pos, radius);
+}

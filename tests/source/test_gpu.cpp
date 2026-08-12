@@ -1,6 +1,7 @@
 #include <cmath>
 #include <vector>
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 #include "nbody/sim.h"
 #include "nbody/util.h"
 
@@ -40,7 +41,10 @@ namespace
 
 TEST_CASE("reading bodies materializes the device's work", "[sim][gpu]")
 {
-    const nbody::Variant v = nbody::Variant::GpuBarnesHut;
+    // Both body layouts, so the conversion protocol is checked for each rather than for
+    // whichever one happens to be wired to this variant today.
+    const nbody::Variant v = GENERATE(nbody::Variant::GpuBarnesHut, nbody::Variant::GpuBarnesHutSoA);
+    INFO("variant: " << nbody::Sim::info(v).name);
     if (skip_without_gpu(v))
         return;
 
@@ -64,7 +68,10 @@ TEST_CASE("reading bodies materializes the device's work", "[sim][gpu]")
 
 TEST_CASE("a mutation reaches the device on the integrate-only path", "[sim][gpu]")
 {
-    const nbody::Variant v = nbody::Variant::GpuBarnesHut;
+    // Both body layouts, so the conversion protocol is checked for each rather than for
+    // whichever one happens to be wired to this variant today.
+    const nbody::Variant v = GENERATE(nbody::Variant::GpuBarnesHut, nbody::Variant::GpuBarnesHutSoA);
+    INFO("variant: " << nbody::Sim::info(v).name);
     if (skip_without_gpu(v))
         return;
 
@@ -96,7 +103,10 @@ TEST_CASE("a mutation reaches the device on the integrate-only path", "[sim][gpu
 
 TEST_CASE("a mutation is visible through the read path", "[sim][gpu]")
 {
-    const nbody::Variant v = nbody::Variant::GpuBarnesHut;
+    // Both body layouts, so the conversion protocol is checked for each rather than for
+    // whichever one happens to be wired to this variant today.
+    const nbody::Variant v = GENERATE(nbody::Variant::GpuBarnesHut, nbody::Variant::GpuBarnesHutSoA);
+    INFO("variant: " << nbody::Sim::info(v).name);
     if (skip_without_gpu(v))
         return;
 
@@ -114,7 +124,10 @@ TEST_CASE("a mutation is visible through the read path", "[sim][gpu]")
 
 TEST_CASE("a mutation survives a variant switch", "[sim][gpu]")
 {
-    const nbody::Variant v = nbody::Variant::GpuBarnesHut;
+    // Both body layouts, so the conversion protocol is checked for each rather than for
+    // whichever one happens to be wired to this variant today.
+    const nbody::Variant v = GENERATE(nbody::Variant::GpuBarnesHut, nbody::Variant::GpuBarnesHutSoA);
+    INFO("variant: " << nbody::Sim::info(v).name);
     if (skip_without_gpu(v))
         return;
 
@@ -138,7 +151,8 @@ TEST_CASE("gpu barnes-hut agrees with cpu barnes-hut", "[sim][gpu]")
     // Same algorithm on both backends, so differences are float ordering only. This is
     // a per-body bound, unlike the cross-algorithm comparison which can only be an
     // aggregate budget.
-    const nbody::Variant gpu = nbody::Variant::GpuBarnesHut;
+    const nbody::Variant gpu = GENERATE(nbody::Variant::GpuBarnesHut, nbody::Variant::GpuBarnesHutSoA);
+    INFO("variant: " << nbody::Sim::info(gpu).name);
     if (skip_without_gpu(gpu))
         return;
 
@@ -165,7 +179,8 @@ TEST_CASE("gpu barnes-hut agrees with cpu barnes-hut", "[sim][gpu]")
 TEST_CASE("gpu brute force agrees with cpu brute force", "[sim][gpu]")
 {
     // Both are exact summations, so this is the strongest agreement check available.
-    const nbody::Variant gpu = nbody::Variant::GpuBruteForce;
+    const nbody::Variant gpu = GENERATE(nbody::Variant::GpuBruteForce, nbody::Variant::GpuBruteForceSoA);
+    INFO("variant: " << nbody::Sim::info(gpu).name);
     if (skip_without_gpu(gpu))
         return;
 
@@ -227,7 +242,10 @@ TEST_CASE("shrinking the body count does not corrupt memory", "[sim][gpu]")
     // Regression test: Buffer only ever grew, and read() copied the whole allocation
     // into the caller's vector, so shrinking the body count overran the heap. It was
     // guarded by an assert, which is compiled out in release.
-    const nbody::Variant v = nbody::Variant::GpuBarnesHut;
+    // Both body layouts, so the conversion protocol is checked for each rather than for
+    // whichever one happens to be wired to this variant today.
+    const nbody::Variant v = GENERATE(nbody::Variant::GpuBarnesHut, nbody::Variant::GpuBarnesHutSoA);
+    INFO("variant: " << nbody::Sim::info(v).name);
     if (skip_without_gpu(v))
         return;
 

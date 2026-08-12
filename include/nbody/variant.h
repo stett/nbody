@@ -10,6 +10,13 @@ namespace nbody
         CpuBruteForce,      // O(n^2) exact summation; the correctness reference
         GpuBarnesHut,       // vulkan compute, tree approximation
         GpuBruteForce,      // vulkan compute, exact summation
+
+        // The same two, over three body arrays grouped by transfer lifetime rather than one
+        // interleaved array of Body. Same results, different memory traffic; they sit side
+        // by side to be measured against each other. Appended, so the values above hold.
+        GpuBarnesHutSoA,
+        GpuBruteForceSoA,
+
         Count
     };
 

@@ -8,6 +8,7 @@
 #include "solvers/cpu_barnes_hut.h"
 #include "solvers/cpu_brute_force.h"
 #include "solvers/gpu_solver.h"
+#include "solvers/gpu_solver_split.h"
 
 using nbody::Sim;
 using nbody::Variant;
@@ -25,10 +26,10 @@ namespace
         return std::make_unique<SolverType>(std::move(context), std::move(state));
     }
 
-    template <nbody::Mode mode>
+    template <typename SolverType, nbody::Mode mode>
     std::unique_ptr<nbody::Solver> make_gpu(std::shared_ptr<nbody::Context> context, nbody::StateRef state)
     {
-        return std::make_unique<nbody::GpuSolver>(std::move(context), std::move(state), mode);
+        return std::make_unique<SolverType>(std::move(context), std::move(state), mode);
     }
 
     // Kept in a separate array from the factories so variants() can hand out a span of
@@ -46,6 +47,10 @@ namespace
                 Variant::GpuBarnesHut, "GPU Barnes-Hut", "Vulkan compute, O(n log n) approximation", false, "not probed" };
             t[size_t(Variant::GpuBruteForce)] = {
                 Variant::GpuBruteForce, "GPU brute force", "Vulkan compute, O(n^2) exact summation", false, "not probed" };
+            t[size_t(Variant::GpuBarnesHutSoA)] = {
+                Variant::GpuBarnesHutSoA, "GPU Barnes-Hut (SoA)", "As above, over split body arrays", false, "not probed" };
+            t[size_t(Variant::GpuBruteForceSoA)] = {
+                Variant::GpuBruteForceSoA, "GPU brute force (SoA)", "As above, over split body arrays", false, "not probed" };
             return t;
         }();
         return table;
@@ -58,8 +63,10 @@ namespace
             std::array<Factory, variant_count> t{};
             t[size_t(Variant::CpuBarnesHut)] = &make<nbody::CpuBarnesHutSolver>;
             t[size_t(Variant::CpuBruteForce)] = &make<nbody::CpuBruteForceSolver>;
-            t[size_t(Variant::GpuBarnesHut)] = &make_gpu<nbody::Mode::NLogN>;
-            t[size_t(Variant::GpuBruteForce)] = &make_gpu<nbody::Mode::N2>;
+            t[size_t(Variant::GpuBarnesHut)] = &make_gpu<nbody::GpuSolver, nbody::Mode::NLogN>;
+            t[size_t(Variant::GpuBruteForce)] = &make_gpu<nbody::GpuSolver, nbody::Mode::N2>;
+            t[size_t(Variant::GpuBarnesHutSoA)] = &make_gpu<nbody::GpuSolverSplit, nbody::Mode::NLogN>;
+            t[size_t(Variant::GpuBruteForceSoA)] = &make_gpu<nbody::GpuSolverSplit, nbody::Mode::N2>;
             return t;
         }();
         return table;
@@ -72,7 +79,8 @@ namespace
 
     bool is_gpu(const Variant v)
     {
-        return v == Variant::GpuBarnesHut || v == Variant::GpuBruteForce;
+        return v == Variant::GpuBarnesHut || v == Variant::GpuBruteForce
+            || v == Variant::GpuBarnesHutSoA || v == Variant::GpuBruteForceSoA;
     }
 
     // THREAD SAFETY: the variant table is process-wide and its readers hand out
@@ -89,7 +97,9 @@ namespace
         static const bool probed = []
         {
             const std::string reason = nbody::GpuDevice::probe();   // empty on success
-            for (const Variant v : { Variant::GpuBarnesHut, Variant::GpuBruteForce })
+            for (const Variant v : {
+                    Variant::GpuBarnesHut, Variant::GpuBruteForce,
+                    Variant::GpuBarnesHutSoA, Variant::GpuBruteForceSoA })
             {
                 infos()[size_t(v)].available = reason.empty();
                 infos()[size_t(v)].unavailable_reason = reason;

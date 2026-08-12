@@ -1,17 +1,16 @@
 #pragma once
-#include <algorithm>
 #include <memory>
 #include "context.h"
 #include "solver.h"
 #include "gpu.h"
-#include "detail/parallel.h"
 #include "detail/tree.h"
 #include "nbody/profile.h"
 
 namespace nbody
 {
     // Runs the simulation on a vulkan compute device, in either barnes-hut or
-    // brute-force mode.
+    // brute-force mode, over one interleaved array of Body. The baseline GpuSolverSplit
+    // (solvers/gpu_solver_split.h) is measured against; everything here moves every step.
     //
     // Unlike the CPU solvers this one has a representation of its own -- the device
     // buffers -- so it is the first real user of the standard-format conversion:
@@ -62,38 +61,28 @@ namespace nbody
             if (_state->bodies.empty())
                 return;
 
-            // Push the host's edits before reading anything device-side, and before the
-            // tree is built off positions the device has not been told about.
-            if (_host_dirty)
-                upload_bodies();
-
             build_or_clear_tree();
-            upload_nodes();
-
-            _gpu->step(dt, _state->theta, _state->gravity, _mode, _state->size, _state->wrap, wanted_readback());
+            upload();
+            _gpu->step_interleaved(dt, _state->theta, _state->gravity, _mode, _state->size, _state->wrap);
             _device_dirty = true;
+
+            // Publish every step, as integrate() does.
+            materialize();
         }
 
         void accelerate() override
         {
             NBODY_PROFILE_ZONE();
             // An empty body array cannot be bound: Buffer::allocate() leaves a null
-            // vk::Buffer at size 0, and prepare() would bind it with range 0 --
+            // vk::Buffer at size 0, and write_interleaved() would bind it with range 0 --
             // VUID-VkDescriptorBufferInfo-range-00341, and undefined behaviour without
             // the nullDescriptor feature.
             if (_state->bodies.empty())
                 return;
 
-            if (_host_dirty)
-                upload_bodies();
-
             build_or_clear_tree();
-            upload_nodes();
-
-            // Nothing is fetched here. accelerate() only writes the accelerations, which
-            // nothing on the host reads until it asks for the state; materialize() will
-            // fetch them then.
-            _gpu->accelerate(_state->theta, _state->gravity, _mode, Readback::None);
+            upload();
+            _gpu->accelerate_interleaved(_state->theta, _state->gravity, _mode);
             _device_dirty = true;
         }
 
@@ -109,10 +98,15 @@ namespace nbody
             // device's pre-mutation copy and then materialize() would download the
             // result straight over the caller's write, destroying it.
             if (_host_dirty)
-                upload_bodies();
+                upload();
 
-            _gpu->integrate(dt, _state->size, _state->wrap, Readback::None);
+            _gpu->integrate_interleaved(dt, _state->size, _state->wrap);
             _device_dirty = true;
+
+            // Publish every step. The demo reads the bodies each frame anyway, so
+            // staying lazy would buy nothing today; this is solver-local policy and can
+            // change without touching the interface.
+            materialize();
         }
 
         // N^2 mode's root-only tree is a binding placeholder, not a real acceleration
@@ -124,122 +118,42 @@ namespace nbody
 
     private:
 
-        // What the step's own submission should bring back.
-        //
-        // Positions, in barnes-hut mode, because the next frame's tree is built from them
-        // and that is not optional however lazy the rest of the policy is.
-        //
-        // Everything, if the last step was followed by a materialize(). A caller that reads
-        // the bodies every frame -- the demo does -- will read them again, and folding the
-        // download into the step's submission is a whole round trip cheaper than letting
-        // materialize() discover the shortfall and go back for it. A caller that only
-        // wanted to advance the simulation never sets the flag and never pays for
-        // velocities or accelerations at all.
-        [[nodiscard]] Readback wanted_readback() const
-        {
-            Readback want = _mode == Mode::NLogN ? Readback::Positions : Readback::None;
-            if (_materialize_expected)
-                want = want | Readback::All;
-            _materialize_expected = false;
-            return want;
-        }
-
         // Bring _tree in line with the current bodies, ready to be bound for a dispatch.
         void build_or_clear_tree()
         {
             NBODY_PROFILE_ZONE();
-            if (_mode != Mode::NLogN)
+            if (_mode == Mode::NLogN)
             {
-                // The N^2 shader never reads the node buffer, but prepare() binds it
+                detail::build_tree(_tree, _state->bodies, _state->size);
+            }
+            else
+            {
+                // The N^2 shader never reads the node buffer, but write() binds it
                 // regardless and a zero-sized allocation leaves a null vk::Buffer, so
                 // keep a root-only tree to bind against.
                 _tree.clear({ .size = _state->size });
-                return;
             }
-
-            // Build straight out of the staging positions rather than out of State::bodies.
-            // They are the same values, but this way a step that nothing has read does not
-            // have to re-interleave a million bodies into Body just to reach two fields.
-            _gpu->download(Readback::Positions);
-            detail::build_tree(_tree, _gpu->staged_pos_mass(), _gpu->staged_body_count(), _state->size);
         }
 
-        // Push the canonical State into this solver's representation, de-interleaving Body
-        // into the device's parallel arrays. Written directly into the mapped staging
-        // allocations: the split has to touch every field either way, so building three
-        // host vectors and copying those would be pure overhead.
-        void upload_bodies()
+        // Push the canonical State into this solver's representation. Today the device
+        // layout already matches Body so this is a straight upload; a solver with a
+        // different internal layout would transform here.
+        void upload()
         {
             NBODY_PROFILE_ZONE();
-
-            const size_t num_bodies = _state->bodies.size();
-            _gpu->reserve_bodies(num_bodies);
-
-            // Mapped once, on this thread. map_bodies() does the dirty-range bookkeeping,
-            // so the workers below only ever write their own disjoint slice.
-            const GpuDevice::BodyMapping mapping = _gpu->map_bodies(0, num_bodies);
-
-            detail::parallel_blocks(*_context->pool, num_bodies, [this, mapping](const size_t begin, const size_t end)
-            {
-                for (size_t i = begin; i < end; ++i)
-                {
-                    const Body& body = _state->bodies[i];
-                    mapping.pos_mass[i] = { body.pos, body.mass };
-                    mapping.vel_radius[i] = { body.vel, body.radius };
-                    mapping.acc[i] = { body.acc, 0 };
-                }
-            });
-
+            _gpu->write_interleaved(_state->bodies, _tree.nodes());
             _host_dirty = false;
         }
 
-        // The tree is rebuilt from scratch every frame, so unlike the bodies there is no
-        // version of this that sends less than all of it.
-        void upload_nodes()
-        {
-            NBODY_PROFILE_ZONE();
-            _gpu->write_nodes(_tree.nodes());
-        }
-
-        // Convert the device's representation back into the canonical State, reassembling
-        // Body from the parallel arrays.
-        //
-        // This is the only thing that asks for velocities and accelerations, which is the
-        // point: a caller that steps without reading never moves them across the bus.
+        // Convert the device's representation back into the canonical State. Today the
+        // device layout already matches Body so this is a straight download; a solver
+        // with a different internal layout would transform here.
         void materialize() const
         {
             NBODY_PROFILE_ZONE();
-
-            // Tell the next step to fold this download into its own submission. Set even
-            // when there is nothing to do here, since what matters is that the caller is
-            // the kind that reads.
-            _materialize_expected = true;
-
             if (!_device_dirty)
                 return;
-
-            _gpu->download(Readback::All);
-
-            // Take only what both sides hold: the staging allocation only ever grows, so
-            // reading all of it overruns `bodies` whenever the count has shrunk.
-            const size_t num_bodies = std::min(_state->bodies.size(), _gpu->staged_body_count());
-            const BodyPosMass* const pos_mass = _gpu->staged_pos_mass();
-            const BodyVelRadius* const vel_radius = _gpu->staged_vel_radius();
-            const BodyAcc* const acc = _gpu->staged_acc();
-
-            detail::parallel_blocks(*_context->pool, num_bodies, [this, pos_mass, vel_radius, acc](const size_t begin, const size_t end)
-            {
-                for (size_t i = begin; i < end; ++i)
-                {
-                    Body& body = _state->bodies[i];
-                    body.pos = pos_mass[i].pos;
-                    body.mass = pos_mass[i].mass;
-                    body.vel = vel_radius[i].vel;
-                    body.radius = vel_radius[i].radius;
-                    body.acc = acc[i].acc;
-                }
-            });
-
+            _gpu->read_interleaved(_state->bodies);
             _device_dirty = false;
         }
 
@@ -254,9 +168,5 @@ namespace nbody
         // The canonical State holds bodies the device has not seen yet.
         // mutable: ingest() is const so that reads can drive it.
         mutable bool _host_dirty = true;
-
-        // Whether a materialize() has happened since the last step, used to predict the
-        // next one. mutable for the same reason as the others.
-        mutable bool _materialize_expected = false;
     };
 }
