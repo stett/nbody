@@ -16,6 +16,10 @@
 // answer different questions: "blind" steps without ever reading the bodies, which is what
 // a headless run does and where lazy readback can pay off, and "reading" pulls the bodies
 // back every step, which is what the demo does and where it cannot.
+//
+// Neither pair isolates the layout on its own. The interleaved solver uploads and
+// materializes every step by design, so what "blind" measures is each layout together with
+// its transfer policy -- lazy transfers are the point of the split, not a separate variable.
 namespace
 {
     constexpr float dt = 0.01f;
