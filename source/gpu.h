@@ -232,6 +232,9 @@ namespace nbody
         // Staging holds bodies the device buffer has not been given yet.
         bool upload_pending_interleaved = false;
 
+        // Whether a bound device buffer has moved since the descriptor set was written.
+        bool descriptors_stale_interleaved = true;
+
         // ---- split layout ----------------------------------------------------------------
         vk::raii::DescriptorSetLayout descriptor_set_layout_split;
         vk::raii::DescriptorSet descriptor_set_split;
@@ -294,6 +297,9 @@ namespace nbody
         // Size the split device buffers to their staging counterparts and rebind if anything
         // moved. Before recording, so a dispatch that uploads nothing still binds storage.
         void prepare_split();
+
+        // Rebind the interleaved set if a buffer under it has moved.
+        void prepare_interleaved();
 
         // command buffer recording and submission
         void record_dispatch(vk::raii::Pipeline& pipeline, vk::raii::PipelineLayout& layout, vk::raii::DescriptorSet& set);

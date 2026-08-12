@@ -330,11 +330,29 @@ void GpuDevice::write_interleaved(const std::vector<Body>& bodies, const std::ve
     staging_bodies.write(bodies.data(), 0, bodies_bytes);
     staging_nodes.reserve(nodes_bytes);
     staging_nodes.write(nodes.data(), 0, nodes_bytes);
-    buffer_bodies.reserve(bodies_bytes);
-    buffer_nodes.reserve(nodes_bytes);
+    if (buffer_bodies.reserve(bodies_bytes))
+        descriptors_stale_interleaved = true;
+
+    // The node buffer belongs to both layouts, so a move here invalidates the split
+    // bindings too -- and prepare_split() will not notice, since the capacity now suffices.
+    if (buffer_nodes.reserve(nodes_bytes))
+        descriptors_stale_interleaved = descriptors_stale_split = true;
+
     upload_pending_interleaved = true;
 
-    // update descriptor sets -- the shaders bind the device buffers, never the staging pair
+    // update push constant values
+    push_constants.num_bodies = (int)bodies.size();
+    push_constants.num_nodes = (int)nodes.size();
+}
+
+// Rebind if a bound buffer has moved. Before recording, for the same reason prepare_split()
+// is: the dispatch that follows may copy nothing and still has to bind valid storage.
+void GpuDevice::prepare_interleaved()
+{
+    if (!descriptors_stale_interleaved) { return; }
+    descriptors_stale_interleaved = false;
+
+    // the shaders bind the device buffers, never the staging pair
     const std::array<vk::DescriptorBufferInfo, 2> buffer_infos
     {
         vk::DescriptorBufferInfo{ buffer_bodies.buffer, 0, buffer_bodies.size },
@@ -354,10 +372,6 @@ void GpuDevice::write_interleaved(const std::vector<Body>& bodies, const std::ve
         };
 
     device.updateDescriptorSets(descriptor_set_writes, { });
-
-    // update push constant values
-    push_constants.num_bodies = (int)bodies.size();
-    push_constants.num_nodes = (int)nodes.size();
 }
 
 void GpuDevice::read_interleaved(std::vector<Body>& bodies)
@@ -429,6 +443,7 @@ void GpuDevice::record_readback_interleaved()
 void GpuDevice::integrate_interleaved(const float dt, const float size, const bool wrap)
 {
     set_integrate_constants(dt, size, wrap);
+    prepare_interleaved();
 
     command_buffer.begin({ });
     record_upload_interleaved();
@@ -442,6 +457,7 @@ void GpuDevice::integrate_interleaved(const float dt, const float size, const bo
 void GpuDevice::accelerate_interleaved(const float theta, const float gravity, const Mode mode)
 {
     set_accelerate_constants(theta, gravity, mode);
+    prepare_interleaved();
 
     command_buffer.begin({ });
     record_upload_interleaved();
@@ -461,6 +477,8 @@ void GpuDevice::step_interleaved(
     const bool wrap)
 {
     NBODY_PROFILE_ZONE();
+
+    prepare_interleaved();
 
     command_buffer.begin({ });
     record_upload_interleaved();
@@ -567,26 +585,26 @@ void GpuDevice::download(const Readback want)
 // copy, which would leave the descriptor set pointing at a destroyed allocation.
 void GpuDevice::prepare_split()
 {
-    const auto grow = [](nbody::Buffer& device_buffer, const nbody::Buffer& staging)
+    // Per buffer, not once for the set: a staging array is only authoritative when
+    // staging_valid names it, so re-sending all of them because some other buffer moved
+    // would push a stale array over the device's newer copy.
+    const auto grow = [this](nbody::Buffer& device_buffer, nbody::Buffer& staging)
     {
-        return device_buffer.reserve(staging.used);
+        if (!device_buffer.reserve(staging.used)) { return false; }
+
+        // The old allocation took its contents with it, so nothing partial can be sent.
+        staging.dirty(0, staging.used);
+        descriptors_stale_split = true;
+        return true;
     };
 
-    bool moved = false;
-    moved |= grow(buffer_pos_mass, staging_pos_mass);
-    moved |= grow(buffer_vel_radius, staging_vel_radius);
-    moved |= grow(buffer_acc, staging_acc);
-    moved |= grow(buffer_nodes, staging_nodes);
-    descriptors_stale_split |= moved;
+    grow(buffer_pos_mass, staging_pos_mass);
+    grow(buffer_vel_radius, staging_vel_radius);
+    grow(buffer_acc, staging_acc);
 
-    if (moved)
-    {
-        // The old allocations took their contents with them, so nothing partial can be sent.
-        staging_pos_mass.dirty(0, staging_pos_mass.used);
-        staging_vel_radius.dirty(0, staging_vel_radius.used);
-        staging_acc.dirty(0, staging_acc.used);
-        staging_nodes.dirty(0, staging_nodes.used);
-    }
+    // Shared with the interleaved layout, whose bindings a move invalidates as well.
+    if (grow(buffer_nodes, staging_nodes))
+        descriptors_stale_interleaved = true;
 
     if (!descriptors_stale_split) { return; }
     descriptors_stale_split = false;

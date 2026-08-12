@@ -39,6 +39,57 @@ namespace
     }
 }
 
+TEST_CASE("stepping blind agrees with stepping while reading", "[sim][gpu]")
+{
+    const nbody::Variant v = GENERATE(nbody::Variant::GpuBarnesHut, nbody::Variant::GpuBarnesHutSoA);
+    INFO("variant: " << nbody::Sim::info(v).name);
+    if (skip_without_gpu(v))
+        return;
+
+    // Readback is a copy and changes nothing the device computes, so how often a caller
+    // reads must not change where the bodies end up. Long enough a run that the tree
+    // outgrows its allocation partway through: that is what regressed, a device buffer
+    // moving and forcing an upload of staging arrays no read had refreshed, which put the
+    // first frame's velocities back over the device's own.
+    constexpr float dt = 0.02f;
+    constexpr size_t num = 8192;
+    constexpr int steps = 64;
+
+    nbody::Sim seed(v);
+    seed_disk(seed, num);
+    const std::vector<nbody::Body> initial = seed.bodies();
+
+    // One at a time: the variants share a device, so a live second Sim would be stepping
+    // over the first one's buffers.
+    const auto run = [&](const bool read_every_step)
+    {
+        nbody::Sim sim(v);
+        sim.mutable_bodies() = initial;
+        for (int i = 0; i < steps; ++i)
+        {
+            sim.update(dt);
+            if (read_every_step)
+                REQUIRE(sim.bodies().size() == num);
+        }
+        return sim.bodies();
+    };
+
+    const std::vector<nbody::Body> blind = run(false);
+    const std::vector<nbody::Body> reading = run(true);
+
+    REQUIRE(blind.size() == reading.size());
+
+    float worst = 0.f;
+    for (size_t i = 0; i < blind.size(); ++i)
+    {
+        worst = std::max(worst, std::sqrt((blind[i].pos - reading[i].pos).size_sq()));
+        worst = std::max(worst, std::sqrt((blind[i].vel - reading[i].vel).size_sq()));
+    }
+
+    INFO("worst divergence: " << worst);
+    REQUIRE(worst < 1e-3f);
+}
+
 TEST_CASE("reading bodies materializes the device's work", "[sim][gpu]")
 {
     // Both body layouts, so the conversion protocol is checked for each rather than for
