@@ -39,6 +39,32 @@ namespace
     }
 }
 
+TEST_CASE("integrating first thing binds valid node storage", "[sim][gpu]")
+{
+    const nbody::Variant v = GENERATE(nbody::Variant::GpuBarnesHut, nbody::Variant::GpuBarnesHutSoA);
+    INFO("variant: " << nbody::Sim::info(v).name);
+    if (skip_without_gpu(v))
+        return;
+
+    // integrate() stages no tree, so nothing had sized the node buffer it binds regardless.
+    // Only detectable under validation, hence the coarse check: what is asserted here is
+    // that the path runs at all, on a solver no accelerate() or update() has been through.
+    nbody::Sim sim(v);
+    seed_disk(sim, 256);
+
+    const nbody::Vector vel = { 10.f, 0.f, 0.f };
+    const nbody::Vector from = sim.bodies()[3].pos;
+    sim.mutable_bodies()[3].vel = vel;
+    sim.mutable_bodies()[3].acc = { 0.f, 0.f, 0.f };
+
+    constexpr float dt = 0.1f;
+    sim.integrate(dt);
+
+    const nbody::Vector expected = from + vel * dt;
+    const nbody::Vector p = sim.bodies()[3].pos;
+    REQUIRE(std::sqrt((p - expected).size_sq()) < 1e-2f);
+}
+
 TEST_CASE("stepping blind agrees with stepping while reading", "[sim][gpu]")
 {
     const nbody::Variant v = GENERATE(nbody::Variant::GpuBarnesHut, nbody::Variant::GpuBarnesHutSoA);

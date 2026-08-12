@@ -602,9 +602,15 @@ void GpuDevice::prepare_split()
     grow(buffer_vel_radius, staging_vel_radius);
     grow(buffer_acc, staging_acc);
 
-    // Shared with the interleaved layout, whose bindings a move invalidates as well.
-    if (grow(buffer_nodes, staging_nodes))
+    // Shared with the interleaved layout, whose bindings a move invalidates as well. Floored
+    // at one node because integrate() binds the buffer without ever staging a tree, and a
+    // zero-sized allocation is a null handle at range 0 -- VUID-VkDescriptorBufferInfo-range-00341.
+    if (buffer_nodes.reserve(std::max<size_t>(staging_nodes.used, sizeof(bh::Node))))
+    {
+        staging_nodes.dirty(0, staging_nodes.used);
+        descriptors_stale_split = true;
         descriptors_stale_interleaved = true;
+    }
 
     if (!descriptors_stale_split) { return; }
     descriptors_stale_split = false;
