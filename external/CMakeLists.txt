@@ -3,6 +3,25 @@
 add_library(BS_thread_pool INTERFACE)
 target_include_directories(BS_thread_pool INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/thread-pool/include)
 
+# add simde, which supplies the x86 intrinsics vocabulary on every target rather than only
+# on x86: on x86-64 the simde_* calls compile to the intrinsics they name, and on arm64 they
+# become NEON. Unlike tracy this is not optional, so the missing-checkout case has to fail
+# here with something better than a header-not-found error from the first translation unit.
+#
+# Header-only, so an interface target rather than add_subdirectory: simde's own cmake exists
+# to build its test suite, which is large and not ours to run.
+#
+# The include root is the repository root, making the include form <simde/x86/avx2.h>.
+# SYSTEM because these headers are not ours to keep warning-clean, matching the -external:I
+# treatment Vulkan's headers already get.
+if (NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/simde/simde/simde-common.h")
+    message(FATAL_ERROR
+        "external/simde is empty. "
+        "Fetch it with: git submodule update --init --recursive")
+endif()
+add_library(simde INTERFACE)
+target_include_directories(simde SYSTEM INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/simde)
+
 # either half of tracy needs the submodule actually checked out
 if (NBODY_TRACY OR NBODY_TRACY_PROFILER)
     if (NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tracy/CMakeLists.txt")

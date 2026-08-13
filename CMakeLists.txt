@@ -19,6 +19,11 @@ add_library(nbody STATIC ${sources})
 target_include_directories(nbody PUBLIC "include" "source")
 target_link_libraries(nbody PUBLIC BS_thread_pool)
 
+# PUBLIC even though only headers under source/detail use simde: "source" above is a public
+# include directory, so anything those headers include has to be reachable by consumers too.
+# Costs nothing to propagate -- simde is header-only and contributes no link inputs.
+target_link_libraries(nbody PUBLIC simde)
+
 # PUBLIC: profile.h is a public header, so embedders need both the client and the switch.
 if (NBODY_TRACY)
     target_link_libraries(nbody PUBLIC Tracy::TracyClient)
