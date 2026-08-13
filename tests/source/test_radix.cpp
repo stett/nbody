@@ -1,6 +1,7 @@
 #include <atomic>
 #include <algorithm>
 #include <random>
+#include <span>
 #include <string>
 #include <vector>
 #include <catch2/catch_test_macros.hpp>
@@ -12,12 +13,39 @@ namespace
 {
     using std::vector;
     using std::pair;
+    using std::span;
     using std::countl_zero;
-	using nbody::detail::radix_tree;
+    using namespace nbody::detail;
 
     using Node = pair<int32_t, int32_t>;
     using Nodes = vector<Node>;
     using Keys = vector<uint32_t>;
+
+    // Every implementation of the construction must produce the same tree, so each one is
+    // held to the same oracle rather than to the others. Naming them here means a new
+    // implementation is covered by every case below the moment it is added to this list,
+    // and a failure reports which one diverged.
+    struct Builder
+    {
+        const char* name;
+        void (*build)(span<const uint32_t>, span<Node>, int32_t);
+        bool supports_partial_build;
+    };
+
+    static BS::thread_pool pool;
+
+    template <auto* impl = scalar::radix_tree>
+    const auto radix_tree_parallel = [](span<const uint32_t> keys, span<pair<int32_t, int32_t>> nodes, int32_t node_offset)
+    {
+        parallel::radix_tree<impl>(pool, keys, nodes, node_offset);
+    };
+
+    constexpr Builder builders[]{
+        { "scalar",             &scalar::radix_tree, true },
+        { "simd",               &simd::radix_tree  , true },
+        { "parallel-scalar",    radix_tree_parallel<scalar::radix_tree>, false },
+        { "parallel-simd",      radix_tree_parallel<simd::radix_tree>  , false },
+    };
 
     int32_t key_cpl(const uint32_t a, const uint32_t b)
     {
@@ -63,10 +91,10 @@ namespace
         return nodes;
     }
 
-    Nodes actual_tree(const Keys& keys)
+    Nodes actual_tree(const Builder& builder, const Keys& keys)
     {
         Nodes nodes(keys.size() - 1, Node{ INT32_MIN, INT32_MIN });
-        radix_tree(keys, nodes);
+        builder.build(keys, nodes, 0);
         return nodes;
     }
 
@@ -127,16 +155,23 @@ namespace
     void check_tree(const Keys& keys)
     {
         INFO("keys: " << describe(keys));
+
+        // built once: the oracle does not depend on which implementation is under test
         const Nodes expected = reference_tree(keys);
-        const Nodes actual = actual_tree(keys);
-        for (size_t i = 0; i < expected.size(); ++i)
+
+        for (const Builder& builder : builders)
         {
-            INFO("node " << i
-                << ": expected {" << expected[i].first << ", " << expected[i].second << "}"
-                << " actual {" << actual[i].first << ", " << actual[i].second << "}");
-            REQUIRE(actual[i] == expected[i]);
+            INFO("builder: " << builder.name);
+            const Nodes actual = actual_tree(builder, keys);
+            for (size_t i = 0; i < expected.size(); ++i)
+            {
+                INFO("node " << i
+                    << ": expected {" << expected[i].first << ", " << expected[i].second << "}"
+                    << " actual {" << actual[i].first << ", " << actual[i].second << "}");
+                REQUIRE(actual[i] == expected[i]);
+            }
+            check_structure(keys, actual);
         }
-        check_structure(keys, actual);
     }
 
     // Karras' construction requires strictly increasing keys.
@@ -175,11 +210,15 @@ TEST_CASE("radix tree", "[radix]")
         // it is not fit to serve as an oracle for everything below
         REQUIRE(reference_tree(keys) == nodes_expected);
 
-        const Nodes nodes = actual_tree(keys);
-        for (size_t i = 0; i < nodes.size(); ++i)
+        for (const Builder& builder : builders)
         {
-            INFO("node " << i << ": " << nodes[i].first << ", " << nodes[i].second);
-            REQUIRE(nodes[i] == nodes_expected[i]);
+            INFO("builder: " << builder.name);
+            const Nodes nodes = actual_tree(builder, keys);
+            for (size_t i = 0; i < nodes.size(); ++i)
+            {
+                INFO("node " << i << ": " << nodes[i].first << ", " << nodes[i].second);
+                REQUIRE(nodes[i] == nodes_expected[i]);
+            }
         }
     }
 
@@ -281,7 +320,11 @@ TEST_CASE("radix tree", "[radix]")
     SECTION("partial node range")
     {
         // radix_tree() is documented as buildable over a section of the node array; a prefix
-        // of the nodes must come out the same as when the whole array is built at once
+        // of the nodes must come out the same as the whole tree built at once.
+        //
+        // Sweeping every prefix length is also what covers a vectorized implementation's
+        // remainder handling, since each length leaves a different number of nodes over after
+        // the last full batch of lanes.
         std::mt19937 rng(1234);
         std::uniform_int_distribution<uint32_t> key_dist(0, (1u << 30) - 1);
 
@@ -290,14 +333,21 @@ TEST_CASE("radix tree", "[radix]")
             key = key_dist(rng);
         keys = sanitize(keys);
 
-        const Nodes expected = actual_tree(keys);
-        for (size_t count = 1; count < keys.size(); ++count)
+        const Nodes expected = reference_tree(keys);
+        for (const Builder& builder : builders)
         {
-            Nodes nodes(count, Node{ INT32_MIN, INT32_MIN });
-            radix_tree(keys, nodes);
-            INFO("first " << count << " nodes");
-            for (size_t i = 0; i < count; ++i)
-                REQUIRE(nodes[i] == expected[i]);
+            if (builder.supports_partial_build)
+            {
+                INFO("builder: " << builder.name);
+                for (size_t count = 1; count < keys.size(); ++count)
+                {
+                    Nodes nodes(count, Node{ INT32_MIN, INT32_MIN });
+                    builder.build(keys, nodes, 0);
+                    INFO("first " << count << " nodes");
+                    for (size_t i = 0; i < count; ++i)
+                        REQUIRE(nodes[i] == expected[i]);
+                }
+            }
         }
     }
 }
