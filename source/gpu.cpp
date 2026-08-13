@@ -1010,27 +1010,6 @@ namespace
         if (flags & vk::MemoryPropertyFlagBits::eHostCached)   add("HOST_CACHED");
         return out.empty() ? "none" : out;
     }
-
-    // Dump the memory type table the first time we allocate. Where the storage buffers land
-    // decides whether the barnes-hut traversal reads from VRAM or across PCIe, and that is
-    // not visible from any external profiler on this app (the vulkan instance is
-    // compute-only and never presents, so the frame-based tools have nothing to hook).
-    void log_memory_types_once(vk::PhysicalDeviceMemoryProperties const& memoryProperties)
-    {
-        static bool logged = false;
-        if (logged) { return; }
-        logged = true;
-
-        std::cerr << "nbody: vulkan memory types:" << std::endl;
-        for (uint32_t i = 0; i < memoryProperties.memoryTypeCount; ++i)
-        {
-            const vk::MemoryType& type = memoryProperties.memoryTypes[i];
-            std::cerr
-                << "nbody:   [" << i << "] heap " << type.heapIndex
-                << " (" << (memoryProperties.memoryHeaps[type.heapIndex].size >> 20) << " MiB) "
-                << describe_memory_flags(type.propertyFlags) << std::endl;
-        }
-    }
 }
 
 uint32_t GpuDevice::find_memory_type(
@@ -1049,8 +1028,6 @@ vk::raii::DeviceMemory GpuDevice::alloc_device_memory(
     vk::MemoryRequirements const& memoryRequirements,
     vk::MemoryPropertyFlags memoryPropertyFlags)
 {
-    log_memory_types_once( memoryProperties );
-
     // Callers state exactly what they need and get it. There is no preference to express
     // any more: shader storage asks for DEVICE_LOCAL and lands in the full VRAM heap, while
     // staging asks for HOST_CACHED, which no device-local type offers and which therefore

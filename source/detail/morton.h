@@ -10,7 +10,7 @@ namespace nbody::detail
     // Expand a 10 bit integer into a 30 bit integer by inserting two integers after each bit.
     //
     // Algorithm copied from (1)
-    uint32_t expandBits(uint32_t v)
+    uint32_t expand_bits(uint32_t v)
     {
         v = (v * 0x00010001u) & 0xFF0000FFu;
         v = (v * 0x00000101u) & 0x0F00F00Fu;
@@ -31,9 +31,9 @@ namespace nbody::detail
         // 1. scale pos into the range 0 - 1023, which is the first 10 bits.
         // 2. insert two zeros in between each of the 10 bits for each axis.
         // 3. shift each expanded 10-bit number into place, priority x, y, z.
-        uint32_t bx = expandBits((uint32_t)(pos.x * 1023.f));
-        uint32_t by = expandBits((uint32_t)(pos.y * 1023.f));
-        uint32_t bz = expandBits((uint32_t)(pos.z * 1023.f));
+        uint32_t bx = expand_bits((uint32_t)(pos.x * 1023.f));
+        uint32_t by = expand_bits((uint32_t)(pos.y * 1023.f));
+        uint32_t bz = expand_bits((uint32_t)(pos.z * 1023.f));
         return (bx << 2) | (by << 1) | (bz << 0);
     }
 }
