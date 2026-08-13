@@ -63,17 +63,17 @@ namespace nbody::detail
             //const uint32_t dmin = i - d >= 0 ? cpl(sorted_keys[i], sorted_keys[i - d]) : -1;
             const int32_t dmin = index_cpl(i, i - d);
             int32_t lmax = 2;
-            while (index_cpl(i, i + lmax) > dmin)
+            while (index_cpl(i, i + (lmax * d)) > dmin)
                 lmax <<= 1;
 
             // use a binary search to find the exact length of the range, along with
             // the index of the last key in the range (might be > i or < i)
             // 1) "div" is the temporary divisor for the binary search, starting at 2 and doubling each iteration
-            // 2) "l" is the current length of the range, starting at 0 and increasing each iteration
+            // 2) "l" is the current length of the range (minus one), starting at 0 and increasing each iteration
             // 3) "t" is the amount by which we're considering increasing the length of the range
             int32_t div = 2;
-            int32_t l = 0;
             int32_t t = 0;
+            int32_t l = 0;
             do {
                 t = lmax / div;
                 div <<= 1;
@@ -86,6 +86,7 @@ namespace nbody::detail
             // this is the index of the last key whose bit following the common prefix is 0.
             const int32_t dnode = index_cpl(i, j);
             div = 2;
+            t = 0;
             int32_t s = 0;
             do {
                 t = l / div;
@@ -102,8 +103,8 @@ namespace nbody::detail
             int32_t i1 = j;
             if (i0 > i1)
                 std::swap(i0, i1);
-            get<0>(nodes[i]) = (i0 == k ? 1 : -1) * (k);
-            get<1>(nodes[i]) = (i1 == k ? 1 : -1) * (k + 1);
+            get<0>(nodes[i]) = (i0 == k ? 1 : -1) * k;
+            get<1>(nodes[i]) = (i1 == k + 1 ? 1 : -1) * (k + 1);
         }
     }
 

@@ -39,6 +39,7 @@ TEST_CASE("radix tree", "[radix]")
 
         for (size_t i = 0; i < nodes.size(); ++i)
         {
+            INFO("node " << i << ": " << nodes[i].first << ", " << nodes[i].second);
             REQUIRE(nodes[i] == nodes_expected[i]);
         }
     }
