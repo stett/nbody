@@ -30,13 +30,14 @@ namespace nbody::detail
     }
 
     // Build a radix tree from a sorted list of keys, populating a span of internal nodes in a flat array.
-    // This algorithm can be run on a section of keys and nodes, so that the tree can be built in parallel.
-    // The keys must be sorted in ascending order.
+    //
+    // This algorithm can be run on a section of nodes, so that the tree can be built in parallel, but must
+    // always receive the full range of sorted keys.
     //
     // Algorithm from (1), section 3.2
     void radix_tree(const span<const uint32_t> sorted_keys, const span<pair<int32_t, int32_t>> nodes)
     {
-        assert(sorted_keys.size() == nodes.size() + 1);
+        assert(nodes.size() + 1 <= sorted_keys.size());
 
         const auto index_cpl = [&](const int32_t i, const int32_t j) -> int32_t
         {
@@ -89,7 +90,10 @@ namespace nbody::detail
             t = 0;
             int32_t s = 0;
             do {
-                t = l / div;
+                // the division must round up, otherwise the last step of the search can be
+                // skipped and the split lands short of its true position. unlike "lmax" above,
+                // "l" is not a power of two, so this is not free.
+                t = (l + div - 1) / div;
                 div <<= 1;
                 if (index_cpl(i, i + ((s + t) * d)) > dnode)
                     s += t;
@@ -106,11 +110,5 @@ namespace nbody::detail
             get<0>(nodes[i]) = (i0 == k ? 1 : -1) * k;
             get<1>(nodes[i]) = (i1 == k + 1 ? 1 : -1) * (k + 1);
         }
-    }
-
-    template <size_t N>
-    void radix_tree(const span<const uint32_t, N> keys, const span<pair<int32_t, int32_t>, N-1> nodes)
-    {
-        radix_tree(keys, nodes);
     }
 }
