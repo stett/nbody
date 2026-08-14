@@ -99,6 +99,7 @@ namespace nbody::detail
         }
     }
 
+    /*
     namespace simd
     {
         int32_t cpl(const uint32_t a, const uint32_t b)
@@ -187,4 +188,5 @@ namespace nbody::detail
             }
         }
     }
+    */
 }

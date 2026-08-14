@@ -37,6 +37,7 @@ namespace nbody::detail
         void radix_tree(const span<const uint32_t> sorted_keys, const span<pair<int32_t, int32_t>> nodes, int32_t node_offset = 0);
     }
 
+    /*
     namespace simd
     {
         // compute the length of the common prefix between two keys
@@ -49,6 +50,7 @@ namespace nbody::detail
         // Algorithm from (1), section 3.2
         void radix_tree(const span<const uint32_t> sorted_keys, const span<pair<int32_t, int32_t>> nodes, int32_t node_offset = 0);
     }
+    */
 
     inline namespace parallel
     {
@@ -56,7 +58,7 @@ namespace nbody::detail
         //
         // This version of the algorithm must receive the full range of keys and nodes.
         template <auto* impl = scalar::radix_tree>
-        void radix_tree(BS::thread_pool& pool, const span<const uint32_t> sorted_keys, const span<pair<int32_t, int32_t>> nodes, int32_t node_offset = 0)
+        void radix_tree_thread_pool(BS::thread_pool& pool, const span<const uint32_t> sorted_keys, const span<pair<int32_t, int32_t>> nodes, int32_t node_offset = 0)
         {
             NBODY_PROFILE_ZONE_NAMED("radix_tree (parallel)");
             assert(node_offset == 0);
@@ -65,6 +67,13 @@ namespace nbody::detail
             {
                 impl(sorted_keys, nodes.subspan(begin, end - begin), begin);
             });
+        }
+
+        template <auto* impl = scalar::radix_tree>
+        void radix_tree(const span<const uint32_t> sorted_keys, const span<pair<int32_t, int32_t>> nodes, int32_t node_offset = 0)
+        {
+            static BS::thread_pool pool;
+            radix_tree_thread_pool(pool, sorted_keys, nodes);
         }
     }
 }

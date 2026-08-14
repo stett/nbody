@@ -32,19 +32,11 @@ namespace
         bool supports_partial_build;
     };
 
-    static BS::thread_pool pool;
-
-    template <auto* impl = scalar::radix_tree>
-    const auto radix_tree_parallel = [](span<const uint32_t> keys, span<pair<int32_t, int32_t>> nodes, int32_t node_offset)
-    {
-        parallel::radix_tree<impl>(pool, keys, nodes, node_offset);
-    };
-
     constexpr Builder builders[]{
         { "scalar",             &scalar::radix_tree, true },
-        { "simd",               &simd::radix_tree  , true },
-        { "parallel-scalar",    radix_tree_parallel<scalar::radix_tree>, false },
-        { "parallel-simd",      radix_tree_parallel<simd::radix_tree>  , false },
+        //{ "simd",               &simd::radix_tree  , true },
+        { "parallel-scalar",    &parallel::radix_tree<scalar::radix_tree>, false },
+        //{ "parallel-simd",      &parallel::radix_tree<simd::radix_tree>  , false },
     };
 
     int32_t key_cpl(const uint32_t a, const uint32_t b)
