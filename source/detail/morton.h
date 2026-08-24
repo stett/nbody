@@ -47,7 +47,7 @@ namespace nbody::detail
         {
             assert(positions.size() == codes.size());
             for (size_t i = 0; i < positions.size(); ++i)
-                codes[i] = morton(positions[i]);
+                codes[i] = scalar::morton(positions[i]);
         }
     }
 
@@ -59,7 +59,7 @@ namespace nbody::detail
             assert(positions.size() == codes.size());
             parallel_blocks(pool, codes.size(), [&positions, &codes](const size_t begin, const size_t end)
             {
-                morton(positions.subspan(begin, end - begin), codes.subspan(begin, end - begin));
+                impl(positions.subspan(begin, end - begin), codes.subspan(begin, end - begin));
             });
         }
 
@@ -67,7 +67,7 @@ namespace nbody::detail
         void morton(const span<const Vector> positions, const span<uint32_t> codes)
         {
             static BS::thread_pool pool;
-            morton_thread_pool(pool, positions, codes);
+            parallel::morton_thread_pool(pool, positions, codes);
         }
     }
 }

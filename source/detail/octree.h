@@ -3,15 +3,15 @@
 #include <span>
 #include "detail/morton.h"
 #include "detail/radix.h"
-#include "vector.h"
-#include "bounds.h"
+#include "nbody/vector.h"
+#include "nbody/bounds.h"
 
 
 namespace nbody::detail
 {
     using std::span;
 
-    struct OcNode
+    struct OctreeNode
     {
         // bounds for this node
         Bounds bounds;
@@ -21,6 +21,9 @@ namespace nbody::detail
 
         // index to first child
         int32_t children; 
+
+        // index to the parent node
+        int32_t parent;
     };
 
     namespace scalar
@@ -31,6 +34,6 @@ namespace nbody::detail
         // written to can be a subset of the total, so that the octree can be built in parallel. In
         // this case, the node_offset parameter must be set to the index of the first node in theh
         // span being written to.
-        void octree(const span<const Vector> points, const span<OcNode> nodes, int32_t node_offset = 0);
+        void octree(const span<const Vector> points, const span<OctreeNode> nodes);
     }
 }
