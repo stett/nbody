@@ -15,13 +15,7 @@ namespace nbody::detail
 {
     using std::span;
 
-    template <size_t bits>
-    struct morton
-    {
-
-    };
-
-    namespace scalar
+    namespace
     {
         // Expand a 10 bit integer into a 30 bit integer by inserting two zeros after each bit.
         //
@@ -115,78 +109,93 @@ namespace nbody::detail
             return true;
         }());
 
-        namespace
-        {
-            template <typename BitsT, typename ArgT0, typename... ArgTs>
-            BitsT _interleave_bits(size_t modulus, ArgT0 arg0, ArgTs... args)
-            {
-                BitsT bits0 = interleave_bits<BitsT>(modulus, arg0);
-                BitsT bits1 = interleave_bits<BitsT>(modulus, args...);
-                return (bits0 << 1) | bits1;
-            }
+        template <typename BitsT, size_t modulus, typename... ArgTs>
+        BitsT _interleave_bits(ArgTs... args);
 
-            template <typename BitsT, typename ArgT0>
-            BitsT _interleave_bits(size_t modulus, ArgT0 arg0)
-            {
-                return expand_bits<BitsT>(modulus, arg0);
-            }
+        template <typename BitsT, size_t modulus, typename ArgT0, typename ArgT1, typename... ArgTs>
+        BitsT _interleave_bits(ArgT0 arg0, ArgT1 arg1, ArgTs... args)
+        {
+            BitsT bits0 = _interleave_bits<BitsT, modulus>(arg0);
+            BitsT bits1 = _interleave_bits<BitsT, modulus>(arg1, args...);
+            return (bits0 << 1) | bits1;
         }
 
-        template <typename BitsT, typename... ArgTs>
+        template <typename BitsT, typename ArgT0>
+        BitsT _interleave_bits(size_t modulus, ArgT0 arg0)
+        {
+            return expand_bits<BitsT>(modulus, arg0);
+        }
+
+        template <typename BitsT,  typename... ArgTs>
         BitsT interleave_bits(ArgTs... args)
         {
-            return _interleave_bits<BitsT>(sizeof...(args), args...);
+            return _interleave_bits<BitsT, sizeof...(ArgTs)>(args...);
+        }
+    }
+
+    // Generic Morton code container type
+    template <typename BitsT = uint32_t, size_t modulus_t = 3>
+    requires std::unsigned_integral<BitsT>
+    class Morton
+    {
+    public:
+        using Bits = BitsT;
+        static constexpr size_t modulus = modulus_t;
+        static constexpr size_t padding = (sizeof(BitsT) * CHAR_BIT) % modulus;
+
+        Morton() : _bits(0) { }
+
+        Morton(const BitsT& bits) : _bits(bits << padding) { }
+
+        Morton(const Morton& rhs) : _bits(rhs._bits) { }
+
+        // interleave a modulus number of values into a bit container,
+        // shifting by "padding" to left-align.
+        template<typename... ArgTs>
+        requires(sizeof...(ArgTs) == modulus_t)
+        Morton(ArgTs... args) : _bits(interleave_bits<BitsT>(args...) << padding)
+        {
+            // ensure that the values we're setting the code to are normalized
+            ( assert(args >= static_cast<ArgTs>(0)), ... );
+            ( assert(args <= static_cast<ArgTs>(1)), ... );
         }
 
-        // Generic Morton code container type
-        template <typename BitsT = uint32_t, size_t modulus_t = 3>
-        requires std::unsigned_integral<BitsT>
-        class Morton
-        {
-        public:
-            using Bits = BitsT;
-            static constexpr size_t modulus = modulus_t;
-            static constexpr size_t padding = (sizeof(BitsT) * CHAR_BIT) % modulus;
+        [[nodiscard]] const Bits& bits() const { return _bits; }
 
-            Morton() : bits(0) { }
+        bool operator>(const Morton& rhs) const { return _bits > rhs._bits; }
+        bool operator<(const Morton& rhs) const { return _bits < rhs._bits; }
+        bool operator==(const Morton& rhs) const { return _bits == rhs._bits; }
 
-            // interleave a modulus number of values into a bit container,
-            // shifting by "padding" to left-align.
-            template<typename... ArgTs>
-            requires(sizeof...(ArgTs) == modulus_t)
-            Morton(ArgTs... args) : bits(interleave_bits<BitsT>(args...) << padding)
-            {
-                // ensure that the values we're setting the code to are normalized
-                ( assert(args >= static_cast<ArgTs>(0)), ... );
-                ( assert(args <= static_cast<ArgTs>(1)), ... );
-            }
+        //Bits operator^(const Morton& rhs) const { return _bits ^ rhs._bits; }
 
-        private:
-            Bits bits;
-        };
+    private:
+        Bits _bits;
+    };
 
-        template <typename BitsT, typename ArgT0, typename... ArgTs>
-        Morton<BitsT, 1+sizeof...(ArgTs)> to_morton(const ArgT0&& arg0, const ArgTs&&... args)
-        {
-            static constexpr size_t modulus = 1 + (sizeof...(ArgTs));
+    template <typename BitsT, typename ArgT0, typename... ArgTs>
+    Morton<BitsT, 1+sizeof...(ArgTs)> to_morton(const ArgT0&& arg0, const ArgTs&&... args)
+    {
+        static constexpr size_t modulus = 1 + (sizeof...(ArgTs));
 
-            expand_bits<BitsT, modulus>();
-        }
+        expand_bits<BitsT, modulus>();
+    }
 
-        // Gives the morton code for a 3d position within the unit cube [(0,0,0),(1,1,1)].
-        // Locations outside of this range will trigger an assert.
-        // 
-        // Algorithm copied from (1)
-        inline Morton<uint32_t, 3> to_morton(const Vector& pos)
-        {
-            return { pos.x, pos.y, pos.z };
-        }
+    // Gives the morton code for a 3d position within the unit cube [(0,0,0),(1,1,1)].
+    // Locations outside of this range will trigger an assert.
+    //
+    // Algorithm copied from (1)
+    inline Morton<> to_morton(const Vector& pos)
+    {
+        return { pos.x, pos.y, pos.z };
+    }
 
-        inline void to_morton(const span<const Vector> positions, const span<uint32_t> codes)
+    namespace scalar
+    {
+        inline void to_morton(const span<const Vector> positions, const span<Morton<>> codes)
         {
             assert(positions.size() == codes.size());
             for (size_t i = 0; i < positions.size(); ++i)
-                codes[i] = scalar::to_morton(positions[i]);
+                codes[i] = detail::to_morton(positions[i]);
         }
     }
 

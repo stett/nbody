@@ -87,7 +87,7 @@ namespace nbody::detail
         void octree(const span<const Vector> points, OctreeNodesT& octree_nodes)
         {
             // compute and sort morton codes
-            vector<uint32_t> keys(points.size());
+            vector<Morton<>> keys(points.size());
             to_morton(points, keys);
             sort(keys.begin(), keys.end());
 
@@ -95,7 +95,7 @@ namespace nbody::detail
             vector<RadixNode> radix_nodes(keys.size() - 1);
             vector<int32_t> radix_node_parents(radix_nodes.size());
             vector<int32_t> radix_node_cpl_deltas(radix_nodes.size());
-            radix_tree(keys, radix_nodes, radix_node_parents, radix_node_cpl_deltas, 3);
+            radix_tree<Morton<>>(keys, radix_nodes, radix_node_parents, radix_node_cpl_deltas);
 
             // get octree node offests for each radix tree node
             vector<int32_t> node_offests(radix_nodes.size());

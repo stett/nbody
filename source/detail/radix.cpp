@@ -12,6 +12,7 @@ namespace nbody::detail
 
     namespace scalar
     {
+        /*
         // "common prefix length"
         //
         // This gives the number of common leading bits in two keys.
@@ -104,23 +105,6 @@ namespace nbody::detail
                 node_cpl_deltas[i] = (dnode / node_cpl_modulus) - (max(dmin, 0) / node_cpl_modulus);
                 node_parents[k] = i;
                 node_parents[k + 1] = i;
-            }
-        }
-
-        /*
-        void radix_tree_parents(const span<const uint32_t> sorted_keys, const span<const RadixNode> nodes, const span<int32_t> parents, int32_t node_offset)
-        {
-            for (int32_t i = node_offset; i < static_cast<int32_t>(nodes.size()) + node_offset; ++i)
-            {
-                // get the common prefix length of the current key with its neighbors
-                //const int32_t d0 = cpl(sorted_keys, i, i + 1);
-                //const int32_t d1 = cpl(sorted_keys, i, i - 1);
-
-                const int32_t child0 = nodes[i].child0_index;
-                const int32_t child1 = nodes[i].child1_index;
-
-                const int32_t d_self = cpl(sorted_keys, abs(child0), abs(child1));
-                const int32_t d_parent = d_self - nodes[i].depth_delta;
             }
         }
         */

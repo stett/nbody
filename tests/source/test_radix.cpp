@@ -57,6 +57,9 @@ namespace
             + ", right " + std::to_string(node.child1_index) + " }";
     }
 
+    // for the tests, we'll use morton codes
+    using MortonT = Morton<uint32_t, 3>;
+
     // Every implementation of the construction must produce the same tree, so each one is
     // held to the same oracle rather than to the others. Naming them here means a new
     // implementation is covered by every case below the moment it is added to this list,
@@ -64,14 +67,14 @@ namespace
     struct Builder
     {
         const char* name;
-        void (*build)(span<const uint32_t>, span<Node>, span<int32_t>, span<int32_t>, int32_t, int32_t);
+        void (*build)(span<const MortonT>, span<Node>, span<int32_t>, span<int32_t>, int32_t);
         bool supports_partial_build;
     };
 
     constexpr Builder builders[]{
-        { "scalar",             &scalar::radix_tree, true },
+        { "scalar",             &scalar::radix_tree<MortonT>, true },
         //{ "simd",               &simd::radix_tree  , true },
-        { "parallel-scalar",    &parallel::radix_tree<scalar::radix_tree>, false },
+        { "parallel-scalar",    &parallel::radix_tree<scalar::radix_tree<MortonT>>, false },
         //{ "parallel-simd",      &parallel::radix_tree<simd::radix_tree>  , false },
     };
 

@@ -42,7 +42,8 @@ TEST_CASE("create quadtree (flat octree)", "[octree]")
     // 0. (1,5) -> (001, 101) -> 010011
     // 1.
     // 2.
-    const vector<uint32_t> keys{
+    using MortonT = detail::Morton<uint32_t, 6>;
+    const vector<MortonT> keys{
         0b010011,
         0b100101,
         0b100111,
@@ -52,7 +53,7 @@ TEST_CASE("create quadtree (flat octree)", "[octree]")
     vector<RadixNode> radix_nodes(keys.size() - 1);
     vector<int32_t> radix_node_parents(radix_nodes.size());
     vector<int32_t> radix_node_cpl_deltas(radix_nodes.size());
-    scalar::radix_tree(keys, radix_nodes, radix_node_parents, radix_node_cpl_deltas, 2);
+    scalar::radix_tree<MortonT>(keys, radix_nodes, radix_node_parents, radix_node_cpl_deltas);
 
     // get octree node offests for each radix tree node
     vector<int32_t> node_offests(radix_nodes.size());
