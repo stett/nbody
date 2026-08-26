@@ -101,9 +101,9 @@ namespace nbody::detail
                 const int32_t child1 = (max(i, j) == k + 1 ? 1 : -1) * (k + 1);
                 nodes[node_index].child0_index = child0;
                 nodes[node_index].child1_index = child1;
-                node_cpl_deltas[node_index] = (dnode / node_cpl_modulus) - (dmin / node_cpl_modulus);
-                node_parents[k] = node_index;
-                node_parents[k + 1] = node_index;
+                node_cpl_deltas[i] = (dnode / node_cpl_modulus) - (max(dmin, 0) / node_cpl_modulus);
+                node_parents[k] = i;
+                node_parents[k + 1] = i;
             }
         }
 

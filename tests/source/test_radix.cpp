@@ -20,24 +20,39 @@ namespace
 
     using Node = RadixNode;
     using Nodes = vector<Node>;
+    using Deltas = vector<int32_t>;
     using Keys = vector<uint32_t>;
 
-    // A node no builder has written yet. Every field is checked, so the filler has to be a
-    // value no correct build can produce.
-    constexpr Node unwritten{ INT32_MIN, INT32_MIN, INT32_MIN };
+    // A node's prefix increment used to be RadixNode::depth_delta; it now comes back in a
+    // span running parallel to the nodes, so a built tree is the two of them together and
+    // every case has to check both halves.
+    struct Tree
+    {
+        Nodes nodes;
+        Deltas cpl_deltas;
+    };
+
+    // Fillers for what no builder has written yet. Every field is checked, so these have to
+    // be values no correct build can produce.
+    constexpr Node unwritten{ INT32_MIN, INT32_MIN };
+    constexpr int32_t unwritten_delta = INT32_MIN;
+
+    // The increments are compared as raw bit counts, which is what a modulus of one asks the
+    // builder for. Folding several bits into one octree level is a different contract and is
+    // not covered here.
+    constexpr int32_t cpl_modulus = 1;
 
     // Compared field by field rather than through an operator==, which would have to live in
     // nbody::detail to be found by ADL from inside std::equal.
     bool same(const Node& a, const Node& b)
     {
-        return a.depth_delta == b.depth_delta
-            && a.child0_index == b.child0_index
-            && a.child1_index == b.child1_index;
+        return a.child0_index == b.child0_index &&
+            a.child1_index == b.child1_index;
     }
 
-    std::string describe(const Node& node)
+    std::string describe(const Node& node, const int32_t cpl_delta)
     {
-        return "{ depth " + std::to_string(node.depth_delta)
+        return "{ delta " + std::to_string(cpl_delta)
             + ", left " + std::to_string(node.child0_index)
             + ", right " + std::to_string(node.child1_index) + " }";
     }
@@ -49,7 +64,7 @@ namespace
     struct Builder
     {
         const char* name;
-        void (*build)(span<const uint32_t>, span<Node>, int32_t);
+        void (*build)(span<const uint32_t>, span<Node>, span<int32_t>, span<int32_t>, int32_t, int32_t);
         bool supports_partial_build;
     };
 
@@ -74,11 +89,11 @@ namespace
     // The node index of a child is known up front because the children of a range split at k
     // are always k and k+1, which is the same convention radix_tree() emits.
     //
-    // Depth comes for free here. radix_tree() has to recover the parent's prefix length from
-    // its neighbours (as `dmin`), but a top-down recursion already holds it, so the two arrive
-    // at the same number by genuinely different routes.
+    // The prefix increment comes for free here. radix_tree() has to recover the parent's
+    // prefix length from its neighbours (as `dmin`), but a top-down recursion already holds
+    // it, so the two arrive at the same number by genuinely different routes.
     void reference_tree(const Keys& keys, const int32_t a, const int32_t b, const int32_t index,
-                        const int32_t parent_prefix, Nodes& nodes)
+                        const int32_t parent_prefix, Tree& tree)
     {
         assert(a < b);
 
@@ -91,34 +106,54 @@ namespace
             ++k;
 
         // negative child index means internal node, positive means leaf
-        nodes[index] = {
-            prefix - parent_prefix,
+        tree.nodes[index] = {
             (k == a ? 1 : -1) * k,
             (k + 1 == b ? 1 : -1) * (k + 1),
         };
 
+        // radix_tree() divides both prefix lengths by the modulus before subtracting, which
+        // is the same subtraction only while the modulus is one
+        static_assert(cpl_modulus == 1, "the oracle measures increments in whole bits");
+        tree.cpl_deltas[index] = prefix - parent_prefix;
+
         if (k != a)
-            reference_tree(keys, a, k, k, prefix, nodes);
+            reference_tree(keys, a, k, k, prefix, tree);
         if (k + 1 != b)
-            reference_tree(keys, k + 1, b, k + 1, prefix, nodes);
+            reference_tree(keys, k + 1, b, k + 1, prefix, tree);
     }
 
-    Nodes reference_tree(const Keys& keys)
+    Tree empty_tree(const size_t num_nodes)
     {
-        Nodes nodes(keys.size() - 1, unwritten);
+        return { Nodes(num_nodes, unwritten), Deltas(num_nodes, unwritten_delta) };
+    }
+
+    Tree reference_tree(const Keys& keys)
+    {
+        Tree tree = empty_tree(keys.size() - 1);
 
         // The root has no parent. radix_tree() reads the missing neighbour through index_cpl,
         // which reports out of range as -1, so the root's increment is measured from -1 and
         // the oracle has to start from the same place.
-        reference_tree(keys, 0, static_cast<int32_t>(keys.size()) - 1, 0, -1, nodes);
-        return nodes;
+        reference_tree(keys, 0, static_cast<int32_t>(keys.size()) - 1, 0, -1, tree);
+        return tree;
     }
 
-    Nodes actual_tree(const Builder& builder, const Keys& keys)
+    Tree actual_tree(const Builder& builder, const Keys& keys, const size_t num_nodes)
     {
-        Nodes nodes(keys.size() - 1, unwritten);
-        builder.build(keys, nodes, 0);
-        return nodes;
+        Tree tree = empty_tree(num_nodes);
+
+        // Parents are written at child indices, and the last leaf's index is one past the last
+        // internal node, so this buffer is a key long rather than a node long. Its contents are
+        // not asserted on here.
+        vector<int32_t> parents(keys.size(), unwritten_delta);
+
+        builder.build(keys, tree.nodes, parents, tree.cpl_deltas, cpl_modulus, 0);
+        return tree;
+    }
+
+    Tree actual_tree(const Builder& builder, const Keys& keys)
+    {
+        return actual_tree(builder, keys, keys.size() - 1);
     }
 
     std::string describe(const Keys& keys)
@@ -134,24 +169,24 @@ namespace
     //
     // Walking down from the root reaches all n leaves and all n-1 internal nodes exactly once.
     // The walk also carries each node's key range, which makes the child indices, the leaf
-    // flags and the depths all checkable in passing: the range determines where the split must
-    // fall, and the prefix length of the range determines what the depths must sum to.
-    void check_structure(const Keys& keys, const Nodes& nodes)
+    // flags and the increments all checkable in passing: the range determines where the split
+    // must fall, and the prefix length of the range determines what the increments must sum to.
+    void check_structure(const Keys& keys, const Tree& tree)
     {
         const int32_t num_keys = static_cast<int32_t>(keys.size());
-        const int32_t num_nodes = static_cast<int32_t>(nodes.size());
+        const int32_t num_nodes = static_cast<int32_t>(tree.nodes.size());
         vector<int> leaf_visits(num_keys, 0);
-        vector<int> node_visits(nodes.size(), 0);
+        vector<int> node_visits(tree.nodes.size(), 0);
 
         struct Frame
         {
             int32_t index;      // internal node
             int32_t first;      // first key of its range
             int32_t last;       // last key of its range
-            int32_t depth_sum;  // sum of Depth from the root down to and including this node
+            int32_t delta_sum;  // sum of the increments from the root down to and including this node
         };
 
-        vector<Frame> stack{ { 0, 0, num_keys - 1, nodes[0].depth_delta } };
+        vector<Frame> stack{ { 0, 0, num_keys - 1, tree.cpl_deltas[0] } };
         while (!stack.empty())
         {
             const Frame frame = stack.back();
@@ -162,15 +197,15 @@ namespace
             REQUIRE(frame.index < num_nodes);
             REQUIRE(++node_visits[frame.index] == 1);
 
-            const Node& node = nodes[frame.index];
+            const Node& node = tree.nodes[frame.index];
 
             // a child always resolves at least one bit more than its parent, so the increment
             // is never zero
-            REQUIRE(node.depth_delta >= 1);
+            REQUIRE(tree.cpl_deltas[frame.index] >= 1);
 
-            // Depth telescopes: summed from the root it reaches this range's own prefix length,
-            // offset by one because the root measures from the absent parent's -1
-            REQUIRE(frame.depth_sum == key_cpl(keys[frame.first], keys[frame.last]) + 1);
+            // the increments telescope: summed from the root they reach this range's own prefix
+            // length, offset by one because the root measures from the absent parent's -1
+            REQUIRE(frame.delta_sum == key_cpl(keys[frame.first], keys[frame.last]) + 1);
 
             // both children name the split, so either index recovers it and they must agree
             const int32_t k = std::abs(node.child0_index);
@@ -193,7 +228,7 @@ namespace
             else
             {
                 REQUIRE(k < num_nodes);
-                stack.push_back({ k, frame.first, k, frame.depth_sum + nodes[k].depth_delta });
+                stack.push_back({ k, frame.first, k, frame.delta_sum + tree.cpl_deltas[k] });
             }
 
             if (right_is_leaf)
@@ -203,7 +238,7 @@ namespace
             else
             {
                 REQUIRE(k + 1 < num_nodes);
-                stack.push_back({ k + 1, k + 1, frame.last, frame.depth_sum + nodes[k + 1].depth_delta });
+                stack.push_back({ k + 1, k + 1, frame.last, frame.delta_sum + tree.cpl_deltas[k + 1] });
             }
         }
 
@@ -213,24 +248,31 @@ namespace
             REQUIRE(visits == 1);
     }
 
+    // Compares a prefix of a built tree against the oracle, node and increment together.
+    void check_nodes(const Tree& actual, const Tree& expected, const size_t count)
+    {
+        for (size_t i = 0; i < count; ++i)
+        {
+            INFO("node " << i
+                << ": expected " << describe(expected.nodes[i], expected.cpl_deltas[i])
+                << " actual " << describe(actual.nodes[i], actual.cpl_deltas[i]));
+            REQUIRE(same(actual.nodes[i], expected.nodes[i]));
+            REQUIRE(actual.cpl_deltas[i] == expected.cpl_deltas[i]);
+        }
+    }
+
     void check_tree(const Keys& keys)
     {
         INFO("keys: " << describe(keys));
 
         // built once: the oracle does not depend on which implementation is under test
-        const Nodes expected = reference_tree(keys);
+        const Tree expected = reference_tree(keys);
 
         for (const Builder& builder : builders)
         {
             INFO("builder: " << builder.name);
-            const Nodes actual = actual_tree(builder, keys);
-            for (size_t i = 0; i < expected.size(); ++i)
-            {
-                INFO("node " << i
-                    << ": expected " << describe(expected[i])
-                    << " actual " << describe(actual[i]));
-                REQUIRE(same(actual[i], expected[i]));
-            }
+            const Tree actual = actual_tree(builder, keys);
+            check_nodes(actual, expected, expected.nodes.size());
             check_structure(keys, actual);
         }
     }
@@ -263,39 +305,32 @@ TEST_CASE("radix tree", "[radix]")
         // The ranges and splits are: node 0 covers keys [0,5] and splits at 3, node 3 covers
         // [0,3] splitting at 1, node 1 covers [0,1] splitting at 0, node 2 covers [2,3], and
         // node 4 covers [4,5]. Their prefix lengths (as 32 bit counts, so 27 means the keys
-        // first differ at bit 4) are 27, 28, 30, 29 and 29, and each depth is that prefix
+        // first differ at bit 4) are 27, 28, 30, 29 and 29, and each increment is that prefix
         // minus its parent's - the root measuring from -1, giving 27 - (-1) = 28.
-        const Nodes nodes_expected{
-            { 28, -3, -4 },
-            {  2,  0,  1 },
-            {  1,  2,  3 },
-            {  1, -1, -2 },
-            {  2,  4,  5 },
+        const Tree expected{
+            Nodes{
+                { -3, -4 },
+                {  0,  1 },
+                {  2,  3 },
+                { -1, -2 },
+                {  4,  5 },
+            },
+            Deltas{ 28, 2, 1, 1, 2 },
         };
 
         // the reference builder must reproduce the case we worked out by hand, otherwise it is
         // not fit to serve as an oracle for everything below
-        const Nodes reference = reference_tree(keys);
-        REQUIRE(reference.size() == nodes_expected.size());
-        for (size_t i = 0; i < reference.size(); ++i)
+        const Tree reference = reference_tree(keys);
+        REQUIRE(reference.nodes.size() == expected.nodes.size());
         {
-            INFO("reference node " << i
-                << ": expected " << describe(nodes_expected[i])
-                << " actual " << describe(reference[i]));
-            REQUIRE(same(reference[i], nodes_expected[i]));
+            INFO("builder: reference");
+            check_nodes(reference, expected, expected.nodes.size());
         }
 
         for (const Builder& builder : builders)
         {
             INFO("builder: " << builder.name);
-            const Nodes nodes = actual_tree(builder, keys);
-            for (size_t i = 0; i < nodes.size(); ++i)
-            {
-                INFO("node " << i
-                    << ": expected " << describe(nodes_expected[i])
-                    << " actual " << describe(nodes[i]));
-                REQUIRE(same(nodes[i], nodes_expected[i]));
-            }
+            check_nodes(actual_tree(builder, keys), expected, expected.nodes.size());
         }
     }
 
@@ -350,7 +385,8 @@ TEST_CASE("radix tree", "[radix]")
     SECTION("deep prefix chains")
     {
         // Keys sharing all but the last few bits, so prefix lengths crowd up against 32 and
-        // most depths are 1. Depth is the field most likely to be wrong at the extremes.
+        // most increments are 1. The increment is the value most likely to be wrong at the
+        // extremes.
         for (uint32_t base = 0; base < 8; ++base)
         {
             Keys keys;
@@ -424,7 +460,7 @@ TEST_CASE("radix tree", "[radix]")
             key = key_dist(rng);
         keys = sanitize(keys);
 
-        const Nodes expected = reference_tree(keys);
+        const Tree expected = reference_tree(keys);
         for (const Builder& builder : builders)
         {
             if (builder.supports_partial_build)
@@ -432,16 +468,8 @@ TEST_CASE("radix tree", "[radix]")
                 INFO("builder: " << builder.name);
                 for (size_t count = 1; count < keys.size(); ++count)
                 {
-                    Nodes nodes(count, unwritten);
-                    builder.build(keys, nodes, 0);
                     INFO("first " << count << " nodes");
-                    for (size_t i = 0; i < count; ++i)
-                    {
-                        INFO("node " << i
-                            << ": expected " << describe(expected[i])
-                            << " actual " << describe(nodes[i]));
-                        REQUIRE(same(nodes[i], expected[i]));
-                    }
+                    check_nodes(actual_tree(builder, keys, count), expected, count);
                 }
             }
         }
