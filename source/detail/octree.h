@@ -93,14 +93,17 @@ namespace nbody::detail
                 const int32_t i_node_0 = 1 + node_offsets[i_radix];
                 const NodeCount node_count = node_counts[i_radix];
                 const int32_t i_node_end = i_node_0 + node_count.internals + node_count.leafs;
-                int32_t i_node = i_node_0;
+                //int32_t i_node = i_node_0;
 
                 // populate the first node's parent pointer
                 octree_nodes[i_node_0].parent = find_octree_parent(i_radix);
 
                 // populate corresponding intermediate nodes
-                for (; i_node < i_node_0 + node_count.internals; ++i_node)
+                //for (; i_node < i_node_0 + node_count.internals; ++i_node)
+                for (int32_t i_internal = 0; i_internal < node_count.internals; ++i_internal)
                 {
+                    const int32_t i_node = i_node_0 + i_internal;
+
                     // store the parent. except for the first node, the parent will always be the previously added node
                     if (i_node > i_node_0)
                         octree_nodes[i_node].parent = i_node - 1;
@@ -112,12 +115,16 @@ namespace nbody::detail
                     // always be at least one child coming up next, either the next internal or the first leaf
                     octree_nodes[i_node].child = i_node + 1;
 
+                    // TODO: pack this value into the child node's sign bit
                     octree_nodes[i_node].is_leaf = false;
                 }
 
                 // populate corresponding leaf nodes after the internals
-                for (; i_node < i_node_0 + node_count.internals + node_count.leafs; ++i_node)
+                //for (; i_node < i_node_0 + node_count.internals + node_count.leafs; ++i_node)
+                for (int32_t i_leaf = 0; i_leaf < node_count.leafs; ++i_leaf)
                 {
+                    const int32_t i_node = i_node_0 + node_count.internals + i_leaf;
+
                     // the parent for all the children will be the last intermediate that was added,
                     // or i_node_0's parent (which we already found) if there's no intermediate ancestor.
                     if (i_node > i_node_0)
@@ -132,9 +139,9 @@ namespace nbody::detail
                     octree_nodes[i_node].next = i_node + 1 < octree_nodes.size() ? i_node + 1 : 0;
 
                     // for leaf nodes, the child index will indicate an index into the original keys array
-                    // TODO: how do we determine this?
-                    octree_nodes[i_node].child = 0;
+                    octree_nodes[i_node].child = i_radix + i_leaf;
 
+                    // TODO: pack this value into the child node's sign bit
                     octree_nodes[i_node].is_leaf = true;
                 }
             }

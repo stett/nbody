@@ -101,10 +101,10 @@ TEST_CASE("create quadtree (flat octree)", "[octree]")
 	REQUIRE(octree_nodes[4].next == 0);
 
 	REQUIRE(octree_nodes[0].child == 1);
-	//REQUIRE(octree_nodes[1].child == 0);
+	REQUIRE(octree_nodes[1].child == 0);
 	REQUIRE(octree_nodes[2].child == 3);
-	//REQUIRE(octree_nodes[3].child == 1);
-	//REQUIRE(octree_nodes[4].child == 2);
+	REQUIRE(octree_nodes[3].child == 1);
+	REQUIRE(octree_nodes[4].child == 2);
 
 	REQUIRE(octree_nodes[0].is_leaf == 0);
 	REQUIRE(octree_nodes[1].is_leaf == 1);
