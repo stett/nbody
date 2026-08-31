@@ -47,28 +47,10 @@ TEST_CASE("create quadtree (flat octree)", "[octree]")
         0b1011,
     };
 
-    // build the radix tree
-    vector<RadixNode> radix_nodes(keys.size() - 1);
-    vector<int32_t> radix_parents(radix_nodes.size());
-    vector<NodeCount> node_counts(radix_nodes.size());
-    scalar::radix_tree<MortonT>(keys, radix_nodes, radix_parents, node_counts);
-
-    // compute node count totals
-    vector<int32_t> node_count_totals(radix_nodes.size());
-    transform(node_counts.begin(), node_counts.end(), node_count_totals.begin(), [](const NodeCount& n) -> int32_t { return n.internals + n.leafs; });
-
-    // get octree node offests for each radix tree node
-    vector<int32_t> offsets(radix_nodes.size());
-    exclusive_scan(node_count_totals.begin(), node_count_totals.end(), offsets.begin(), 0);
-
-    // count the number of octree nodes, allocate.
-    // make sure it matches the output we expect
-    const int32_t num_octree_nodes = 1 + offsets.back() + node_count_totals.back();
-    vector<OctreeNode> octree_nodes(num_octree_nodes);
-    REQUIRE(num_octree_nodes == 5);
-
     // build the octree
-    scalar::build_octree<MortonT>(keys, radix_nodes, radix_parents, node_counts, node_count_totals, offsets, octree_nodes);
+    //scalar::build_octree<MortonT>(keys, radix_nodes, radix_parents, node_counts, node_count_totals, offsets, octree_nodes);
+	vector<OctreeNode> octree_nodes = scalar::build_octree<MortonT>(keys);
+	REQUIRE(octree_nodes.size() == 5);
 
 	// Here's what we expect:
 	/*
@@ -88,27 +70,9 @@ TEST_CASE("create quadtree (flat octree)", "[octree]")
 		4: parent = 2, next = 0, child = 2    [leaf]
 	*/
 
-    REQUIRE(octree_nodes[0].parent == 0);
-    REQUIRE(octree_nodes[1].parent == 0);
-    REQUIRE(octree_nodes[2].parent == 0);
-    REQUIRE(octree_nodes[3].parent == 2);
-    REQUIRE(octree_nodes[4].parent == 2);
-
-	REQUIRE(octree_nodes[0].next == 0);
-	REQUIRE(octree_nodes[1].next == 2);
-	REQUIRE(octree_nodes[2].next == 0);
-	REQUIRE(octree_nodes[3].next == 4);
-	REQUIRE(octree_nodes[4].next == 0);
-
-	REQUIRE(octree_nodes[0].child == 1);
-	REQUIRE(octree_nodes[1].child == 0);
-	REQUIRE(octree_nodes[2].child == 3);
-	REQUIRE(octree_nodes[3].child == 1);
-	REQUIRE(octree_nodes[4].child == 2);
-
-	REQUIRE(octree_nodes[0].is_leaf == 0);
-	REQUIRE(octree_nodes[1].is_leaf == 1);
-	REQUIRE(octree_nodes[2].is_leaf == 0);
-	REQUIRE(octree_nodes[3].is_leaf == 1);
-	REQUIRE(octree_nodes[4].is_leaf == 1);
+	REQUIRE(octree_nodes[0] == OctreeNode{ .parent = 0, .next = 0, .child = 1, .is_leaf = 0 });
+	REQUIRE(octree_nodes[1] == OctreeNode{ .parent = 0, .next = 2, .child = 0, .is_leaf = 1 });
+	REQUIRE(octree_nodes[2] == OctreeNode{ .parent = 0, .next = 0, .child = 3, .is_leaf = 0 });
+	REQUIRE(octree_nodes[3] == OctreeNode{ .parent = 2, .next = 4, .child = 1, .is_leaf = 1 });
+	REQUIRE(octree_nodes[4] == OctreeNode{ .parent = 2, .next = 0, .child = 2, .is_leaf = 1 });
 }

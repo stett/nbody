@@ -1,6 +1,8 @@
 #pragma once
 #include <cstdint>
 #include <span>
+#include <vector>
+#include <numeric>
 #include <optional>
 #include "detail/morton.h"
 #include "detail/radix.h"
@@ -11,6 +13,8 @@
 namespace nbody::detail
 {
     using std::span;
+    using std::vector;
+    using std::exclusive_scan;
 
     struct OctreeNode
     {
@@ -20,6 +24,8 @@ namespace nbody::detail
 
         // TODO: pack this value into the sign bit for child
         bool is_leaf = false;
+
+        bool operator==(const OctreeNode& rhs) const = default;
     };
 
     template <typename MortonT>
@@ -41,14 +47,6 @@ namespace nbody::detail
         //
         // return the total number of octree nodes.
         int32_t octree_node_offsets(const span<const int32_t> node_cpl_deltas, const span<int32_t> node_offsets);
-
-        // Build an octree from a set of points, populating a span of nodes in a flat array.
-        //
-        // The entire span of points being read from must be provided, but the span of nodes being
-        // written to can be a subset of the total, so that the octree can be built in parallel. In
-        // this case, the node_offset parameter must be set to the index of the first node in theh
-        // span being written to.
-        //void build_octree(const span<const Vector> points, const span<OctreeNode> nodes);
 
         template <typename MortonT>
         void build_octree(
@@ -145,6 +143,38 @@ namespace nbody::detail
                     octree_nodes[i_node].is_leaf = true;
                 }
             }
+        }
+
+        // Build an octree from a set of points, populating a span of nodes in a flat array.
+        //
+        // The entire span of points being read from must be provided, but the span of nodes being
+        // written to can be a subset of the total, so that the octree can be built in parallel. In
+        // this case, the node_offset parameter must be set to the index of the first node in theh
+        // span being written to.
+        template <typename MortonT>
+        vector<OctreeNode> build_octree(span<const MortonT> keys)
+        {
+            // build the radix tree
+            vector<RadixNode> radix_nodes(keys.size() - 1);
+            vector<int32_t> radix_parents(radix_nodes.size());
+            vector<NodeCount> node_counts(radix_nodes.size());
+            scalar::radix_tree<MortonT>(keys, radix_nodes, radix_parents, node_counts);
+
+            // compute node count totals
+            vector<int32_t> node_count_totals(radix_nodes.size());
+            transform(node_counts.begin(), node_counts.end(), node_count_totals.begin(), [](const NodeCount& n) -> int32_t { return n.internals + n.leafs; });
+
+            // get octree node offests for each radix tree node
+            vector<int32_t> offsets(radix_nodes.size());
+            exclusive_scan(node_count_totals.begin(), node_count_totals.end(), offsets.begin(), 0);
+
+            // count the number of octree nodes, and allocate.
+            const int32_t num_octree_nodes = 1 + offsets.back() + node_count_totals.back();
+            vector<OctreeNode> octree_nodes(num_octree_nodes);
+
+            // build and return the octree
+            scalar::build_octree<MortonT>(keys, radix_nodes, radix_parents, node_counts, node_count_totals, offsets, octree_nodes);
+            return octree_nodes;
         }
     }
 }
