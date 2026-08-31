@@ -18,7 +18,6 @@ namespace
 
     using Node = RadixNode;
     using Nodes = vector<Node>;
-    using Deltas = vector<int32_t>;
     using NodeCounts = vector<NodeCount>;
 
     // Cases write their keys as raw interleaved patterns rather than deriving them from
@@ -27,20 +26,20 @@ namespace
     using Bits = uint32_t;
     using Keys = vector<Bits>;
 
-    // A node's prefix increment used to be RadixNode::depth_delta; it now comes back in a span
-    // running parallel to the nodes, so a built tree is the two of them together and every case
-    // has to check both halves.
+    // A node's prefix increment used to be RadixNode::depth_delta, then briefly a span of its
+    // own; it now arrives as NodeCount::internals, the count of octree levels the node resolves,
+    // alongside NodeCount::leafs. That span runs parallel to the nodes, so a built tree is the
+    // two of them together and every case has to check both halves.
     struct Tree
     {
         Nodes nodes;
-        Deltas cpl_deltas;
         NodeCounts node_counts;
     };
 
     // Fillers for what no builder has written yet. Every field is checked, so these have to be
     // values no correct build can produce.
     constexpr Node unwritten{ INT32_MIN, INT32_MIN };
-    constexpr int32_t unwritten_delta = INT32_MIN;
+    constexpr int32_t unwritten_parent = INT32_MIN;
     constexpr NodeCount unwritten_node_count{ INT32_MIN, INT32_MIN };
 
     // The bits a key may set: everything Morton's constructor will not shift off the top. Two
@@ -73,9 +72,15 @@ namespace
             a.child1_index == b.child1_index;
     }
 
-    std::string describe(const Node& node, const int32_t cpl_delta)
+    bool same(const NodeCount& a, const NodeCount& b)
     {
-        return "{ delta " + std::to_string(cpl_delta)
+        return a.internals == b.internals && a.leafs == b.leafs;
+    }
+
+    std::string describe(const Node& node, const NodeCount& count)
+    {
+        return "{ internals " + std::to_string(count.internals)
+            + ", leafs " + std::to_string(count.leafs)
             + ", left " + std::to_string(node.child0_index)
             + ", right " + std::to_string(node.child1_index) + " }";
     }
@@ -142,8 +147,12 @@ namespace
         };
 
         // the increment counts level boundaries crossed, so both ends are folded to a level
-        // before subtracting -- not after, which would count bits instead
-        tree.cpl_deltas[index] = level<MortonT>(prefix) - level<MortonT>(parent_prefix);
+        // before subtracting -- not after, which would count bits instead. the leaf count falls
+        // out of the split: a side of it is a leaf exactly when it is a single key.
+        tree.node_counts[index] = {
+            level<MortonT>(prefix) - level<MortonT>(parent_prefix),
+            (k == a) + (k + 1 == b),
+        };
 
         if (k != a)
             reference_tree(keys, a, k, k, prefix, tree);
@@ -153,7 +162,7 @@ namespace
 
     Tree empty_tree(const size_t num_nodes)
     {
-        return { Nodes(num_nodes, unwritten), Deltas(num_nodes, unwritten_delta), NodeCounts(num_nodes, unwritten_node_count) };
+        return { Nodes(num_nodes, unwritten), NodeCounts(num_nodes, unwritten_node_count) };
     }
 
     template <typename MortonT>
@@ -176,7 +185,7 @@ namespace
         // Parents are written at child indices, and the last leaf's index is one past the last
         // internal node, so this buffer is a key long rather than a node long. Its contents are
         // not asserted on here.
-        vector<int32_t> parents(keys.size(), unwritten_delta);
+        vector<int32_t> parents(keys.size(), unwritten_parent);
 
         builder.build(keys, tree.nodes, parents, tree.node_counts, 0);
         return tree;
@@ -213,7 +222,7 @@ namespace
             int32_t delta_sum;  // sum of the increments from the root down to and including this node
         };
 
-        vector<Frame> stack{ { 0, 0, num_keys - 1, tree.cpl_deltas[0] } };
+        vector<Frame> stack{ { 0, 0, num_keys - 1, tree.node_counts[0].internals } };
         while (!stack.empty())
         {
             const Frame frame = stack.back();
@@ -233,7 +242,7 @@ namespace
             // level 0, and its own prefix is empty when the outermost keys differ in the top
             // bit. Node 0 is always the root.
             const int32_t min_delta = (MortonT::modulus == 1 && frame.index != 0) ? 1 : 0;
-            REQUIRE(tree.cpl_deltas[frame.index] >= min_delta);
+            REQUIRE(tree.node_counts[frame.index].internals >= min_delta);
 
             // the increments telescope: summed from the root they reach the level this range's
             // own prefix length falls in
@@ -260,7 +269,7 @@ namespace
             else
             {
                 REQUIRE(k < num_nodes);
-                stack.push_back({ k, frame.first, k, frame.delta_sum + tree.cpl_deltas[k] });
+                stack.push_back({ k, frame.first, k, frame.delta_sum + tree.node_counts[k].internals });
             }
 
             if (right_is_leaf)
@@ -270,7 +279,7 @@ namespace
             else
             {
                 REQUIRE(k + 1 < num_nodes);
-                stack.push_back({ k + 1, k + 1, frame.last, frame.delta_sum + tree.cpl_deltas[k + 1] });
+                stack.push_back({ k + 1, k + 1, frame.last, frame.delta_sum + tree.node_counts[k + 1].internals });
             }
         }
 
@@ -286,10 +295,10 @@ namespace
         for (size_t i = 0; i < count; ++i)
         {
             INFO("node " << i
-                << ": expected " << describe(expected.nodes[i], expected.cpl_deltas[i])
-                << " actual " << describe(actual.nodes[i], actual.cpl_deltas[i]));
+                << ": expected " << describe(expected.nodes[i], expected.node_counts[i])
+                << " actual " << describe(actual.nodes[i], actual.node_counts[i]));
             REQUIRE(same(actual.nodes[i], expected.nodes[i]));
-            REQUIRE(actual.cpl_deltas[i] == expected.cpl_deltas[i]);
+            REQUIRE(same(actual.node_counts[i], expected.node_counts[i]));
         }
     }
 
@@ -372,7 +381,7 @@ TEST_CASE("radix tree", "[radix]")
                 { -1, -2 },
                 {  4,  5 },
             },
-            Deltas{ 27, 2, 1, 1, 2 },
+            NodeCounts{ { 27, 0 }, { 2, 2 }, { 1, 2 }, { 1, 0 }, { 2, 2 } },
         };
 
         using MortonT = Morton<uint32_t, 1>;
@@ -416,7 +425,7 @@ TEST_CASE("radix tree", "[radix]")
                 { 0, -1 },
                 { 1,  2 },
             },
-            Deltas{ 0, 2 },
+            NodeCounts{ { 0, 1 }, { 2, 2 } },
         };
 
         using MortonT = Morton<uint32_t, 2>;
