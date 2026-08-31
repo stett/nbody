@@ -41,6 +41,7 @@ namespace
     constexpr Node unwritten{ INT32_MIN, INT32_MIN };
     constexpr int32_t unwritten_parent = INT32_MIN;
     constexpr NodeCount unwritten_node_count{ INT32_MIN, INT32_MIN };
+    constexpr int32_t unwritten_range_end = INT32_MIN;
 
     // The bits a key may set: everything Morton's constructor will not shift off the top. Two
     // patterns that differ only above this are the same key, so the mask has to be applied
@@ -93,7 +94,7 @@ namespace
     struct Builder
     {
         const char* name;
-        void (*build)(span<const MortonT>, span<Node>, span<int32_t>, span<NodeCount>, int32_t);
+        void (*build)(span<const MortonT>, span<Node>, span<int32_t>, span<NodeCount>, span<int32_t>, int32_t);
         bool supports_partial_build;
     };
 
@@ -187,7 +188,11 @@ namespace
         // not asserted on here.
         vector<int32_t> parents(keys.size(), unwritten_parent);
 
-        builder.build(keys, tree.nodes, parents, tree.node_counts, 0);
+        // The last key of each node's range, which the octree needs for its escape pointers.
+        // Not asserted on here either; test_octree.cpp is what holds it to anything.
+        vector<int32_t> range_ends(num_nodes, unwritten_range_end);
+
+        builder.build(keys, tree.nodes, parents, tree.node_counts, range_ends, 0);
         return tree;
     }
 

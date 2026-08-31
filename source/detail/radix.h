@@ -102,8 +102,7 @@ namespace nbody::detail
             const span<RadixNode> nodes,
             const span<int32_t> node_parents,
             const span<NodeCount> node_counts,
-            //const span<int32_t> node_cpl_deltas,
-            //const span<int32_t> node_child_counts,
+            const span<int32_t> node_range_ends,
             const int32_t node_offset = 0)
         {
             NBODY_PROFILE_ZONE_NAMED("radix_tree (scalar)");
@@ -174,6 +173,17 @@ namespace nbody::detail
                 //node_child_counts[i] = (child0 >= 0) + (child1 >= 0);
                 node_counts[node_index].internals = (dnode / modulus) - (max(dmin, 0) / modulus);
                 node_counts[node_index].leafs = (child0 >= 0) + (child1 >= 0);
+
+                // The last key of the node's range. Already computed above -- the range is
+                // [min(i,j), max(i,j)] -- and previously discarded, but the octree needs it: a
+                // node's escape pointer is the first node of the range starting one key past
+                // its own, and nothing else recovers where a range ends.
+                //
+                // A node's index is always one end of its range, so this doubles as the test
+                // for which end: node_range_ends[m] > m says m's range *begins* at m, and so
+                // that the range starting at m spans two or more keys rather than being the
+                // lone key m.
+                node_range_ends[node_index] = max(i, j);
                 if (child0 <= 0) node_parents[-child0 - node_offset] = i;
                 if (child1 <= 0) node_parents[-child1 - node_offset] = i;
             }
@@ -203,25 +213,32 @@ namespace nbody::detail
         // KeyT is named first so the default implementation can refer to it: the level
         // arithmetic now comes from KeyT::modulus, so an implementation is only selectable
         // once the key type is fixed.
+        // The trailing spans are indexed by node, so a partial build writes into a subspan of
+        // each alongside the nodes themselves. node_parents is the exception: it is indexed by
+        // *child*, so it is passed whole.
         template <typename KeyT, auto* impl = scalar::radix_tree<KeyT>>
-        void radix_tree_thread_pool(BS::thread_pool& pool, const span<const KeyT> sorted_keys, const span<RadixNode> nodes, const span<int32_t> node_parents, const span<int32_t> node_cpl_deltas, int32_t node_offset = 0)
+        void radix_tree_thread_pool(BS::thread_pool& pool, const span<const KeyT> sorted_keys, const span<RadixNode> nodes, const span<int32_t> node_parents, const span<NodeCount> node_counts, const span<int32_t> node_range_ends, int32_t node_offset = 0)
         {
             NBODY_PROFILE_ZONE_NAMED("radix_tree (parallel)");
             assert(node_offset == 0);
             assert(nodes.size() == sorted_keys.size() - 1);
+            assert(node_counts.size() == nodes.size());
+            assert(node_range_ends.size() == nodes.size());
             detail::parallel_blocks(pool, nodes.size(),
                 [&](const size_t begin, const size_t end)
                 {
-                    impl(sorted_keys, nodes.subspan(begin, end - begin), node_parents, node_cpl_deltas, static_cast<int32_t>(begin));
+                    impl(sorted_keys, nodes.subspan(begin, end - begin), node_parents,
+                        node_counts.subspan(begin, end - begin),
+                        node_range_ends.subspan(begin, end - begin), static_cast<int32_t>(begin));
                 }
             );
         }
 
         template <typename KeyT = Morton<>, auto* impl = scalar::radix_tree<KeyT>>
-        void radix_tree(const span<const KeyT> sorted_keys, const span<RadixNode> nodes, const span<int32_t> node_parents, const span<int32_t> node_cpl_deltas, int32_t node_offset = 0)
+        void radix_tree(const span<const KeyT> sorted_keys, const span<RadixNode> nodes, const span<int32_t> node_parents, const span<NodeCount> node_counts, const span<int32_t> node_range_ends, int32_t node_offset = 0)
         {
             static BS::thread_pool pool;
-            radix_tree_thread_pool<KeyT, impl>(pool, sorted_keys, nodes, node_parents, node_cpl_deltas, node_offset);
+            radix_tree_thread_pool<KeyT, impl>(pool, sorted_keys, nodes, node_parents, node_counts, node_range_ends, node_offset);
         }
     }
 }
