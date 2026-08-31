@@ -268,7 +268,7 @@ TEST_CASE("gpu brute force agrees with cpu brute force", "[sim][gpu]")
     const std::vector<nbody::Body> cpu = sim.bodies();
 
     REQUIRE(sim.set_variant(gpu));
-    REQUIRE(sim.tree() == nullptr);   // the N^2 root-only tree is a binding placeholder
+    REQUIRE(sim.debug_node_count() == 0);   // the N^2 root-only tree is a binding placeholder
     sim.accelerate();
     const std::vector<nbody::Body> dev = sim.bodies();
 

@@ -43,14 +43,93 @@ TEST_CASE("state survives a variant round trip", "[sim][variant]")
         REQUIRE(sim.bodies()[i].pos.z == snapshot[i].pos.z);
     }
 
-    // brute force builds no tree, and callers must cope with that
-    REQUIRE(sim.tree() == nullptr);
-    REQUIRE(sim.nodes().empty());
+    // brute force builds no acceleration structure, and callers must cope with that
+    REQUIRE(sim.debug_node_count() == 0);
 
     REQUIRE(sim.set_variant(nbody::Variant::CpuBarnesHut));
     sim.accelerate();
-    REQUIRE(sim.tree() != nullptr);
-    REQUIRE(sim.nodes().size() > 1);
+    REQUIRE(sim.debug_node_count() > 1);
+}
+
+TEST_CASE("debug nodes are world space, with a full edge length", "[sim][debug]")
+{
+    // The one thing no other case pins, and the one a solver building its tree in some
+    // other space will get wrong: DebugNode is world space and DebugNode::size is a full
+    // edge, not a half extent. A solver that leaked its own normalized cube, or that
+    // handed over a half extent, still produces a plausible-looking wireframe -- at the
+    // origin, or at half scale -- so it has to be asserted rather than eyeballed.
+    nbody::Sim sim;
+    REQUIRE(sim.variant() == nbody::Variant::CpuBarnesHut);
+    sim.set_size(1000.f);
+    seed_disk(sim, 512);
+    sim.accelerate();
+
+    const size_t count = sim.debug_node_count();
+    REQUIRE(count > 1);
+
+    std::vector<nbody::DebugNode> nodes(count);
+    REQUIRE(sim.write_debug_nodes(nodes) == count);
+
+    // node 0 is the root, which spans the whole world: a half extent would give 500
+    REQUIRE(nodes[0].size == 1000.f);
+    REQUIRE(nodes[0].center.x == 0.f);
+    REQUIRE(nodes[0].center.y == 0.f);
+    REQUIRE(nodes[0].center.z == 0.f);
+
+    // every node sits inside the root, which a unit-cube tree handed over unconverted
+    // would not
+    for (const nbody::DebugNode& node : nodes)
+    {
+        REQUIRE(node.size > 0.f);
+        REQUIRE(node.size <= 1000.f);
+        for (size_t axis = 0; axis < 3; ++axis)
+        {
+            REQUIRE(node.center[axis] - node.size * .5f >= -500.f);
+            REQUIRE(node.center[axis] + node.size * .5f <= 500.f);
+        }
+    }
+}
+
+TEST_CASE("a short debug node span truncates rather than overflowing", "[sim][debug]")
+{
+    nbody::Sim sim;
+    seed_disk(sim, 256);
+    sim.accelerate();
+    REQUIRE(sim.debug_node_count() > 4);
+
+    // the contract is min(out.size(), debug_node_count()), so a caller that reuses one
+    // buffer across variants cannot walk off the end of a smaller one
+    std::vector<nbody::DebugNode> few(4);
+    REQUIRE(sim.write_debug_nodes(few) == 4);
+
+    // and an oversized buffer reports what was actually written, not its own size
+    std::vector<nbody::DebugNode> many(sim.debug_node_count() + 16);
+    REQUIRE(sim.write_debug_nodes(many) == sim.debug_node_count());
+
+    // an empty span is legal and writes nothing
+    REQUIRE(sim.write_debug_nodes({}) == 0);
+}
+
+TEST_CASE("every variant agrees on its own debug node count", "[sim][debug][variant]")
+{
+    // The count and the write have to stay in step for every variant, including the ones
+    // that build nothing -- that pair is the whole contract, and it is the only thing a
+    // new solver can get silently wrong.
+    int tested = 0;
+    for (const nbody::VariantInfo& info : nbody::Sim::variants())
+    {
+        if (!info.available)
+            continue;
+
+        nbody::Sim sim(info.variant);
+        seed_disk(sim, 256);
+        sim.accelerate();
+
+        std::vector<nbody::DebugNode> nodes(sim.debug_node_count());
+        REQUIRE(sim.write_debug_nodes(nodes) == sim.debug_node_count());
+        ++tested;
+    }
+    REQUIRE(tested >= 2);
 }
 
 TEST_CASE("settings carry across a variant switch", "[sim][variant]")

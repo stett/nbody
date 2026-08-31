@@ -7,6 +7,10 @@
 #include "solver.h"
 #include "solvers/cpu_barnes_hut.h"
 #include "solvers/cpu_brute_force.h"
+
+// Not in the variant table yet -- included so the compiler holds the in-progress solver to
+// the Solver interface instead of letting it rot uncompiled.
+#include "solvers/cpu_morton_barnes_hut.h"
 #include "solvers/gpu_solver.h"
 #include "solvers/gpu_solver_split.h"
 
@@ -326,10 +330,12 @@ void Sim::integrate(const float dt)
     _solver->integrate(dt);
 }
 
-const nbody::bh::Tree* Sim::tree() const { return _solver->tree(); }
-
-std::span<const nbody::bh::Node> Sim::nodes() const
+size_t nbody::Sim::debug_node_count() const
 {
-    const bh::Tree* t = tree();
-    return t ? std::span<const bh::Node>(t->nodes()) : std::span<const bh::Node>{};
+    return _solver->debug_node_count();
+}
+
+size_t nbody::Sim::write_debug_nodes(const std::span<nbody::DebugNode> out) const
+{
+    return _solver->write_debug_nodes(out);
 }

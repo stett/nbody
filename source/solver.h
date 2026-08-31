@@ -1,7 +1,9 @@
 #pragma once
+#include <cstddef>
 #include <memory>
+#include <span>
 #include "nbody/state.h"
-#include "nbody/bhtree.h"
+#include "nbody/debug.h"
 
 namespace nbody
 {
@@ -59,9 +61,23 @@ namespace nbody
         virtual void update(const float dt) { accelerate(); integrate(dt); }
 
         // --- visualization ---------------------------------------------------------
-        // The barnes-hut tree this solver built, or nullptr if it builds none.
-        // Valid until the next accelerate() or adopt().
-        [[nodiscard]] virtual const bh::Tree* tree() const { return nullptr; }
+        // How many nodes write_debug_nodes() would produce, or 0 if this solver builds no
+        // acceleration structure.
+        //
+        // REQUIRED to be cheap. The demo polls it every frame whether or not the wireframe
+        // is on, so it must not build anything.
+        [[nodiscard]] virtual size_t debug_node_count() const { return 0; }
+
+        // Write this solver's acceleration structure into `out` as drawable cells, and
+        // return how many were written.
+        //
+        // The caller owns the storage: size it to debug_node_count() and reuse it across
+        // frames, so one buffer serves however many solvers a process runs through. A span
+        // shorter than the count is truncated, never overflowed.
+        //
+        // Nothing is cached solver-side, so a caller that never draws never pays -- which
+        // is the point, because filling `weight` costs a traversal per node.
+        virtual size_t write_debug_nodes(std::span<DebugNode> out) const { return 0; }
 
     protected:
 

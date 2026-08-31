@@ -1,7 +1,10 @@
 #pragma once
+#include <algorithm>
+#include <span>
 #include <vector>
 #include "nbody/body.h"
 #include "nbody/bhtree.h"
+#include "nbody/debug.h"
 #include "nbody/profile.h"
 
 namespace nbody::detail
@@ -31,5 +34,38 @@ namespace nbody::detail
     inline void build_tree(bh::Tree& tree, const std::vector<Body>& bodies, const float size)
     {
         build_tree(tree, bodies.data(), bodies.size(), size);
+    }
+
+    // Fill `out` with a drawable view of `tree`, returning how many nodes were written.
+    //
+    // Shared by the three solvers that hold a bh::Tree, for the same reason build_tree is:
+    // so they cannot drift apart on it. Nothing is cached -- the caller owns the storage
+    // and decides when to pay, which matters because the weight below is a full traversal
+    // per node.
+    inline size_t write_debug_nodes(const bh::Tree& tree, const std::span<DebugNode> out)
+    {
+        NBODY_PROFILE_ZONE_NAMED("debug nodes");
+
+        const std::vector<bh::Node>& src = tree.nodes();
+        const size_t count = std::min(out.size(), src.size());
+        for (size_t i = 0; i < count; ++i)
+        {
+            const Vector& center = src[i].bounds.center;
+
+            // The gravitational potential at the node's own centre, at apply()'s default
+            // opening angle. Deliberately not State::theta: this is a picture, and pinning
+            // it keeps the shading still while the slider moves the physics.
+            float weight = 0;
+            tree.apply(center, [&weight, &center](const bh::Node& other)
+            {
+                const Vector delta = other.com - center;
+                weight += other.mass / delta.size_sq();
+            });
+
+            // bounds.size is already a full edge length, which is why DebugNode uses that
+            // convention: every bh::Tree solver copies it rather than converting.
+            out[i] = { .center = center, .size = src[i].bounds.size, .weight = weight };
+        }
+        return count;
     }
 }

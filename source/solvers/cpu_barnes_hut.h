@@ -43,7 +43,12 @@ namespace nbody
                 });
         }
 
-        [[nodiscard]] const bh::Tree* tree() const override { return &_tree; }
+        [[nodiscard]] size_t debug_node_count() const override { return _tree.nodes().size(); }
+
+        size_t write_debug_nodes(const std::span<DebugNode> out) const override
+        {
+            return detail::write_debug_nodes(_tree, out);
+        }
 
     private:
 

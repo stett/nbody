@@ -5,7 +5,7 @@
 #include <string>
 #include <vector>
 #include "body.h"
-#include "bhtree.h"
+#include "debug.h"
 #include "state.h"
 #include "variant.h"
 
@@ -87,16 +87,21 @@ namespace nbody
         void integrate(float dt);
 
         // --- visualization ---------------------------------------------------------
-        // The barnes-hut tree, or nullptr when the active variant builds none.
-        [[nodiscard]] const bh::Tree* tree() const;
+        // How many nodes the active variant's acceleration structure holds, or 0 when it
+        // builds none. Cheap enough to poll every frame.
+        [[nodiscard]] size_t debug_node_count() const;
 
-        // Convenience for the common "how many nodes / draw them" case. Empty when
-        // there is no tree.
+        // Write the active variant's acceleration structure into `out` as drawable cells,
+        // returning how many were written. Zero when the variant builds none.
         //
-        // WARNING: the returned span is invalidated by the next accelerate()/update(),
-        // which rebuilds and reserves the node array. Use it immediately; never store
-        // it across a step.
-        [[nodiscard]] std::span<const bh::Node> nodes() const;
+        // The caller owns the storage: size it to debug_node_count() and keep it, so one
+        // buffer serves every variant the sim is switched through. A short span truncates.
+        //
+        // Unlike every other read here this does NOT re-ingest a caller's mutations first,
+        // and deliberately: it describes the last structure that was *built*, and moving
+        // bodies does not rebuild one. No solver's ingest() touches its tree, so a sync
+        // would be a no-op today -- do not add one on the assumption that it is missing.
+        size_t write_debug_nodes(std::span<DebugNode> out) const;
 
     private:
 

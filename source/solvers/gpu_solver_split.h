@@ -112,9 +112,16 @@ namespace nbody
 
         // N^2 mode's root-only tree is a binding placeholder, not a real acceleration
         // structure, so don't offer it to the renderer.
-        [[nodiscard]] const bh::Tree* tree() const override
+        // The N^2 mode's root-only tree is a binding placeholder, not a real acceleration
+        // structure, so don't offer it to the renderer.
+        [[nodiscard]] size_t debug_node_count() const override
         {
-            return _mode == Mode::NLogN ? &_tree : nullptr;
+            return _mode == Mode::NLogN ? _tree.nodes().size() : 0;
+        }
+
+        size_t write_debug_nodes(const std::span<DebugNode> out) const override
+        {
+            return _mode == Mode::NLogN ? detail::write_debug_nodes(_tree, out) : 0;
         }
 
     private:
