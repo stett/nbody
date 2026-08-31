@@ -1,4 +1,6 @@
 #pragma once
+#include <array>
+#include <cmath>
 #include <cstdint>
 #include <span>
 #include <vector>
@@ -7,7 +9,6 @@
 #include "detail/morton.h"
 #include "detail/radix.h"
 #include "nbody/vector.h"
-#include "nbody/bounds.h"
 
 
 namespace nbody::detail
@@ -28,17 +29,18 @@ namespace nbody::detail
         bool operator==(const OctreeNode& rhs) const = default;
     };
 
-    template <typename MortonT>
-    int32_t quadrant(const MortonT& parent, const MortonT& child)
+    template <size_t dimensions_t>
+    struct OctreeBounds
     {
-        // the "modulus" number of bits following the cpl of a parent
-        // and a child will be the quadrant
-        using BitsT = typename MortonT::Bits;
-        static constexpr size_t modulus = MortonT::modulus;
-        const int32_t prefix_len = detail::scalar::cpl(parent, child);
-        const BitsT quadrant_bits = ((child << prefix_len) >> ((sizeof(BitsT) * 8) - modulus));
-        return static_cast<int32_t>(quadrant_bits);
-    }
+        static constexpr size_t dimensions = dimensions_t;
+        using VectorT = std::array<float, dimensions>;
+        std::array<float, dimensions> center;
+        float half_extent;
+
+        // Exact comparison is what the tests want and is safe here: every value is k / 2^n with
+        // a small numerator, which a float holds exactly.
+        bool operator==(const OctreeBounds& rhs) const = default;
+    };
 
     namespace scalar
     {
@@ -86,8 +88,11 @@ namespace nbody::detail
             span<const int32_t> node_totals,
             span<const int32_t> node_offsets,
             span<const int32_t> leaf_nodes,
-            span<OctreeNode> octree_nodes)
+            span<OctreeNode> octree_nodes,
+            span<OctreeBounds<MortonT::modulus>> octree_bounds)
         {
+            using OctreeBoundsT = OctreeBounds<MortonT::modulus>;
+            using VectorT = typename OctreeBoundsT::VectorT;
 
             // count the number of octree nodes, allocate.
             // make sure it matches the output we expect
@@ -179,6 +184,61 @@ namespace nbody::detail
                     : leaf_nodes[m];
             };
 
+            // The level a radix node's own prefix reaches: level 0 is the whole domain, level 1
+            // one of its quadrants, and so on down.
+            //
+            // The split index k is the last key on the low side of the divide, so keys[k] and
+            // keys[k + 1] are the closest pair this node separates: they agree on exactly its
+            // prefix and part in the bit after it. Their common prefix is therefore the node's
+            // own, which is why nothing has to be stored to recover it -- and k + 1 is always a
+            // key, since a split satisfies a <= k < b.
+            const auto find_octree_level = [&](const int32_t i_radix) -> int32_t
+            {
+                const int32_t i_split = std::abs(radix_nodes[i_radix].child0_index);
+                return scalar::cpl(keys[i_split], keys[i_split + 1])
+                    / static_cast<int32_t>(MortonT::modulus);
+            };
+
+            // The cell an octree node occupies, from its level and any key inside it.
+            //
+            // A key rather than a radix index: every key in a chain node's range shares its
+            // cell, so any of them will do there, but a radix node's two leaf children sit in
+            // *different* cells -- that parting is what the node is -- so a leaf has to name
+            // its own key.
+            //
+            // Each level contributes one bit per axis, x in the high bit of every group.
+            // Gathering an axis's bit from the first `level` groups gives which cell the key
+            // lands in along that axis, so the whole path down from the root is read straight
+            // out of the key and no parent is consulted. That keeps bounds a per-node write,
+            // like every other field here.
+            const auto find_octree_bounds = [&](const int32_t level, const int32_t i_key) -> OctreeBoundsT
+            {
+                static constexpr size_t modulus = MortonT::modulus;
+                static constexpr auto group_mask = static_cast<typename MortonT::Bits>(
+                    (typename MortonT::Bits{ 1 } << modulus) - 1);
+
+                const auto bits = keys[i_key].bits();
+                std::array<uint32_t, modulus> index{};
+                for (int32_t l = 1; l <= level; ++l)
+                {
+                    const auto group = (bits >> (MortonT::width - modulus * l)) & group_mask;
+                    for (size_t axis = 0; axis < modulus; ++axis)
+                        index[axis] = (index[axis] << 1)
+                            | static_cast<uint32_t>((group >> (modulus - 1 - axis)) & 1);
+                }
+
+                // ldexp rather than 1 << level: a modulus of one gives as many levels as the
+                // word has bits, and shifting by the full width is undefined.
+                const float cell_size = std::ldexp(1.0f, -level);
+
+                // the unit cube, which is what to_morton() normalizes into and what the root
+                // above is written as -- level 0 leaves every index at 0 and lands back on it
+                OctreeBoundsT bounds{ .center = {}, .half_extent = 0.5f * cell_size };
+                for (size_t axis = 0; axis < modulus; ++axis)
+                    bounds.center[axis] = (static_cast<float>(index[axis]) + 0.5f) * cell_size;
+                return bounds;
+            };
+
             // the root is the level 0 node of radix node 0's chain: it covers every key, so
             // nothing follows it, and its first child is whatever radix node 0 begins with
             octree_nodes[0] = {
@@ -189,6 +249,10 @@ namespace nbody::detail
                     : find_octree_child(radix_nodes[0].child0_index),
                 .is_leaf = false,
             };
+
+            // initialize the bounds of the root
+            std::fill(octree_bounds[0].center.begin(), octree_bounds[0].center.end(), 0.5);
+            octree_bounds[0].half_extent = 0.5;
 
             // run through all radix nodes, populating octree nodes from them
             for (int32_t i_radix = 0; i_radix < static_cast<int32_t>(radix_nodes.size()); ++i_radix)
@@ -212,28 +276,46 @@ namespace nbody::detail
                 // every node of this chain covers the same key range, so one escape serves them all
                 const int32_t i_next = find_octree_next(node_range_ends[i_radix]);
 
+                // this radix node's own level, wanted once: its chain ends there and its leafs
+                // sit one below it
+                const int32_t level = find_octree_level(i_radix);
+
+                // The chain covers exactly the levels this radix node's parent left unresolved,
+                // so it begins as far above `level` as it has nodes to fill. Each one after the
+                // first is a level deeper, which is why find_octree_level runs once per radix
+                // node rather than once per octree node.
+                int32_t i_level = level - node_count.internals + 1;
+
                 // populate corresponding intermediate nodes
                 for (int32_t i_internal = 0; i_internal < node_count.internals; ++i_internal)
                 {
                     const int32_t i_node = i_node_0 + i_internal;
 
-                    // the chain is contiguous, so every node past the first is parented by the
-                    // previous one. only the head has to be looked up.
-                    octree_nodes[i_node].parent = (i_internal == 0)
-                        ? find_octree_parent(i_radix)
-                        : i_node - 1;
+                    octree_nodes[i_node] = {
 
-                    octree_nodes[i_node].next = i_next;
+                        // the chain is contiguous, so every node past the first is parented by the
+                        // previous one. only the head has to be looked up.
+                        .parent = (i_internal == 0)
+                            ? find_octree_parent(i_radix)
+                            : i_node - 1,
 
-                    // a chain node above the tail has exactly one child, the next link in the
-                    // chain. the tail's children are the radix node's own, and the first of
-                    // those is child0 -- which may live in another block entirely.
-                    octree_nodes[i_node].child = (i_internal + 1 < node_count.internals)
-                        ? i_node + 1
-                        : find_octree_child(radix_nodes[i_radix].child0_index);
+                        // already computed once - the same for each intermediate node in a chain
+                        .next = i_next,
 
-                    // TODO: pack this value into the child node's sign bit
-                    octree_nodes[i_node].is_leaf = false;
+                        // a chain node above the tail has exactly one child, the next link in the
+                        // chain. the tail's children are the radix node's own, and the first of
+                        // those is child0 -- which may live in another block entirely.
+                        .child = (i_internal + 1 < node_count.internals)
+                            ? i_node + 1
+                            : find_octree_child(radix_nodes[i_radix].child0_index),
+
+                        // TODO: pack this value into the child node's sign bit
+                        .is_leaf = false,
+                    };
+
+                    // any key in the range will do: they all share this node's cell, because
+                    // the node is the level at which they still agree
+                    octree_bounds[i_node] = find_octree_bounds(i_level++, node_range_ends[i_radix]);
                 }
 
                 // the leafs hang from the deepest node of the chain, or from whatever is above
@@ -241,6 +323,10 @@ namespace nbody::detail
                 const int32_t i_leaf_parent = (node_count.internals > 0)
                     ? i_node_0 + node_count.internals - 1
                     : find_octree_parent(i_radix);
+
+                // both children of a radix node sit one level below it, on either side of the
+                // split that defines it
+                const int32_t i_leaf_level = level + 1;
 
                 // populate corresponding leaf nodes after the internals
                 for (int32_t i_child = 0; i_child < 2; ++i_child)
@@ -267,6 +353,10 @@ namespace nbody::detail
 
                     // TODO: pack this value into the child node's sign bit
                     octree_nodes[i_node].is_leaf = true;
+
+                    // its own key, not the range's: the two leafs of a radix node are the two
+                    // sides of its split, so they are in different cells
+                    octree_bounds[i_node] = find_octree_bounds(i_leaf_level, i_key);
                 }
             }
         }
@@ -278,8 +368,10 @@ namespace nbody::detail
         // this case, the node_offset parameter must be set to the index of the first node in theh
         // span being written to.
         template <typename MortonT>
-        vector<OctreeNode> build_octree(span<const MortonT> keys)
+        void build_octree(span<const MortonT> keys, vector<OctreeNode>& octree_nodes, vector<OctreeBounds<MortonT::modulus>>& octree_bounds)
         {
+            using OctreeBoundsT = OctreeBounds<MortonT::modulus>;
+
             // build the radix tree
             vector<RadixNode> radix_nodes(keys.size() - 1);
             vector<int32_t> radix_parents(radix_nodes.size());
@@ -297,7 +389,8 @@ namespace nbody::detail
 
             // count the number of octree nodes, and allocate.
             const int32_t num_octree_nodes = 1 + offsets.back() + node_count_totals.back();
-            vector<OctreeNode> octree_nodes(num_octree_nodes);
+            octree_nodes = vector<OctreeNode>(num_octree_nodes);
+            octree_bounds = vector<OctreeBoundsT>(num_octree_nodes);
 
             // map each key to the octree node holding it. depends on the offsets, so it cannot
             // be folded into the radix pass above.
@@ -306,8 +399,7 @@ namespace nbody::detail
 
             // build and return the octree
             scalar::build_octree<MortonT>(keys, radix_nodes, radix_parents, node_counts,
-                node_range_ends, node_count_totals, offsets, leaf_nodes, octree_nodes);
-            return octree_nodes;
+                node_range_ends, node_count_totals, offsets, leaf_nodes, octree_nodes, octree_bounds);
         }
     }
 }

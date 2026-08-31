@@ -37,6 +37,7 @@ TEST_CASE("create 3-element quadtree (flat octree)", "[octree]")
     // two bits per level for a quadtree, and three levels of them: the codes below are written
     // as six significant bits, which Morton left-aligns into the word
     using MortonT = detail::Morton<uint32_t, 2, 4>;
+    using OctreeBoundsT = OctreeBounds<MortonT::modulus>;
     const vector<MortonT> keys{
         0b0110,
         0b1001,
@@ -44,8 +45,11 @@ TEST_CASE("create 3-element quadtree (flat octree)", "[octree]")
     };
 
     // build the octree
-	vector<OctreeNode> octree_nodes = scalar::build_octree<MortonT>(keys);
+	vector<OctreeNode> octree_nodes;
+	vector<OctreeBoundsT> octree_bounds;
+	scalar::build_octree<MortonT>(keys, octree_nodes, octree_bounds);
 	REQUIRE(octree_nodes.size() == 5);
+	REQUIRE(octree_bounds.size() == octree_nodes.size());
 
 	// Here's what we expect:
 	/*
@@ -70,6 +74,16 @@ TEST_CASE("create 3-element quadtree (flat octree)", "[octree]")
 	REQUIRE(octree_nodes[2] == OctreeNode{ .parent = 0, .next = 0, .child = 3, .is_leaf = 0 });
 	REQUIRE(octree_nodes[3] == OctreeNode{ .parent = 2, .next = 4, .child = 1, .is_leaf = 1 });
 	REQUIRE(octree_nodes[4] == OctreeNode{ .parent = 2, .next = 0, .child = 2, .is_leaf = 1 });
+
+	// Bounds. Cells are the unit cube halved once per level, so a node at level L is 2^-L
+	// across and its center is read straight out of any key it holds. Level 0 is the whole
+	// domain, which is why the root is centered on (0.5, 0.5) rather than on the origin.
+
+	REQUIRE(octree_bounds[0] == OctreeBoundsT{ .center = { 0.5f, 0.5f }, .half_extent = 0.5f });
+	REQUIRE(octree_bounds[1] == OctreeBoundsT{ .center = { 0.25f, 0.75f }, .half_extent = 0.25f });
+	REQUIRE(octree_bounds[2] == OctreeBoundsT{ .center = { 0.75f, 0.25f }, .half_extent = 0.25f });
+	REQUIRE(octree_bounds[3] == OctreeBoundsT{ .center = { 0.625f, 0.375f }, .half_extent = 0.125f });
+	REQUIRE(octree_bounds[4] == OctreeBoundsT{ .center = { 0.875f, 0.375f }, .half_extent = 0.125f });
 }
 
 TEST_CASE("create 6-element quadtree (flat octree)", "[octree]")
@@ -90,6 +104,7 @@ TEST_CASE("create 6-element quadtree (flat octree)", "[octree]")
 
 	// Build a sorted list of morton keys for the points in the graph above
 	using MortonT = detail::Morton<uint32_t, 2, 6>;
+	using OctreeBoundsT = OctreeBounds<MortonT::modulus>;
 	const vector<MortonT> keys{
 		0b000111, // B
 		0b010100, // A
@@ -100,8 +115,11 @@ TEST_CASE("create 6-element quadtree (flat octree)", "[octree]")
 	};
 
 	// build the octree
-	vector<OctreeNode> octree_nodes = scalar::build_octree<MortonT>(keys);
+	vector<OctreeNode> octree_nodes;
+	vector<OctreeBoundsT> octree_bounds;
+	scalar::build_octree<MortonT>(keys, octree_nodes, octree_bounds);
 	REQUIRE(octree_nodes.size() == 9);
+	REQUIRE(octree_bounds.size() == octree_nodes.size());
 
 	REQUIRE(octree_nodes[0] == OctreeNode{ .parent = 0, .next = 0, .child = 1, .is_leaf = 0 });
 	REQUIRE(octree_nodes[1] == OctreeNode{ .parent = 0, .next = 2, .child = 0, .is_leaf = 1 });
@@ -112,6 +130,18 @@ TEST_CASE("create 6-element quadtree (flat octree)", "[octree]")
 	REQUIRE(octree_nodes[6] == OctreeNode{ .parent = 0, .next = 0, .child = 7, .is_leaf = 0 });
 	REQUIRE(octree_nodes[7] == OctreeNode{ .parent = 6, .next = 8, .child = 4, .is_leaf = 1 });
 	REQUIRE(octree_nodes[8] == OctreeNode{ .parent = 6, .next = 0, .child = 5, .is_leaf = 1 });
+
+	// Bounds. The root's four children are the four level 1 quadrants that hold anything.
+
+	REQUIRE(octree_bounds[0] == OctreeBoundsT{ .center = { 0.5f, 0.5f }, .half_extent = 0.5f });
+	REQUIRE(octree_bounds[1] == OctreeBoundsT{ .center = { 0.25f, 0.25f }, .half_extent = 0.25f });
+	REQUIRE(octree_bounds[2] == OctreeBoundsT{ .center = { 0.25f, 0.75f }, .half_extent = 0.25f });
+	REQUIRE(octree_bounds[3] == OctreeBoundsT{ .center = { 0.75f, 0.25f }, .half_extent = 0.25f });
+	REQUIRE(octree_bounds[4] == OctreeBoundsT{ .center = { 0.625f, 0.125f }, .half_extent = 0.125f });
+	REQUIRE(octree_bounds[5] == OctreeBoundsT{ .center = { 0.875f, 0.125f }, .half_extent = 0.125f });
+	REQUIRE(octree_bounds[6] == OctreeBoundsT{ .center = { 0.75f, 0.75f }, .half_extent = 0.25f });
+	REQUIRE(octree_bounds[7] == OctreeBoundsT{ .center = { 0.625f, 0.625f }, .half_extent = 0.125f });
+	REQUIRE(octree_bounds[8] == OctreeBoundsT{ .center = { 0.625f, 0.875f }, .half_extent = 0.125f });
 }
 
 TEST_CASE("create 3-element quadtree sharing a level 1 quadrant (flat octree)", "[octree]")
@@ -190,6 +220,7 @@ TEST_CASE("create 3-element quadtree sharing a level 1 quadrant (flat octree)", 
 	*/
 
 	using MortonT = detail::Morton<uint32_t, 2, 6>;
+	using OctreeBoundsT = OctreeBounds<MortonT::modulus>;
 	const vector<MortonT> keys{
 		0b000000, // A
 		0b000100, // B
@@ -197,8 +228,11 @@ TEST_CASE("create 3-element quadtree sharing a level 1 quadrant (flat octree)", 
 	};
 
 	// build the octree
-	vector<OctreeNode> octree_nodes = scalar::build_octree<MortonT>(keys);
+	vector<OctreeNode> octree_nodes;
+	vector<OctreeBoundsT> octree_bounds;
+	scalar::build_octree<MortonT>(keys, octree_nodes, octree_bounds);
 	REQUIRE(octree_nodes.size() == 6);
+	REQUIRE(octree_bounds.size() == octree_nodes.size());
 
 	REQUIRE(octree_nodes[0] == OctreeNode{ .parent = 0, .next = 0, .child = 1, .is_leaf = 0 });
 	REQUIRE(octree_nodes[1] == OctreeNode{ .parent = 0, .next = 0, .child = 2, .is_leaf = 0 });
@@ -206,6 +240,15 @@ TEST_CASE("create 3-element quadtree sharing a level 1 quadrant (flat octree)", 
 	REQUIRE(octree_nodes[3] == OctreeNode{ .parent = 1, .next = 0, .child = 4, .is_leaf = 0 });
 	REQUIRE(octree_nodes[4] == OctreeNode{ .parent = 3, .next = 5, .child = 1, .is_leaf = 1 });
 	REQUIRE(octree_nodes[5] == OctreeNode{ .parent = 3, .next = 0, .child = 2, .is_leaf = 1 });
+
+	// Bounds. Each level down halves the cell, so the chain reads 0.5 -> 0.25 -> 0.125.
+
+	REQUIRE(octree_bounds[0] == OctreeBoundsT{ .center = { 0.5f, 0.5f }, .half_extent = 0.5f });
+	REQUIRE(octree_bounds[1] == OctreeBoundsT{ .center = { 0.25f, 0.25f }, .half_extent = 0.25f });
+	REQUIRE(octree_bounds[2] == OctreeBoundsT{ .center = { 0.125f, 0.125f }, .half_extent = 0.125f });
+	REQUIRE(octree_bounds[3] == OctreeBoundsT{ .center = { 0.125f, 0.375f }, .half_extent = 0.125f });
+	REQUIRE(octree_bounds[4] == OctreeBoundsT{ .center = { 0.0625f, 0.3125f }, .half_extent = 0.0625f });
+	REQUIRE(octree_bounds[5] == OctreeBoundsT{ .center = { 0.1875f, 0.4375f }, .half_extent = 0.0625f });
 }
 
 TEST_CASE("create 2-element quadtree at the deepest level (flat octree)", "[octree]")
@@ -249,19 +292,31 @@ TEST_CASE("create 2-element quadtree at the deepest level (flat octree)", "[octr
 	*/
 
 	using MortonT = detail::Morton<uint32_t, 2, 6>;
+	using OctreeBoundsT = OctreeBounds<MortonT::modulus>;
 	const vector<MortonT> keys{
 		0b000000, // A
 		0b000001  // B
 	};
 
-	vector<OctreeNode> octree_nodes = scalar::build_octree<MortonT>(keys);
+	vector<OctreeNode> octree_nodes;
+	vector<OctreeBoundsT> octree_bounds;
+	scalar::build_octree<MortonT>(keys, octree_nodes, octree_bounds);
 	REQUIRE(octree_nodes.size() == 5);
+	REQUIRE(octree_bounds.size() == octree_nodes.size());
 
 	REQUIRE(octree_nodes[0] == OctreeNode{ .parent = 0, .next = 0, .child = 1, .is_leaf = 0 });
 	REQUIRE(octree_nodes[1] == OctreeNode{ .parent = 0, .next = 0, .child = 2, .is_leaf = 0 });
 	REQUIRE(octree_nodes[2] == OctreeNode{ .parent = 1, .next = 0, .child = 3, .is_leaf = 0 });
 	REQUIRE(octree_nodes[3] == OctreeNode{ .parent = 2, .next = 4, .child = 0, .is_leaf = 1 });
 	REQUIRE(octree_nodes[4] == OctreeNode{ .parent = 2, .next = 0, .child = 1, .is_leaf = 1 });
+
+	// Bounds. Two levels of chain, then the leafs at 2^-3. Only y separates them.
+
+	REQUIRE(octree_bounds[0] == OctreeBoundsT{ .center = { 0.5f, 0.5f }, .half_extent = 0.5f });
+	REQUIRE(octree_bounds[1] == OctreeBoundsT{ .center = { 0.25f, 0.25f }, .half_extent = 0.25f });
+	REQUIRE(octree_bounds[2] == OctreeBoundsT{ .center = { 0.125f, 0.125f }, .half_extent = 0.125f });
+	REQUIRE(octree_bounds[3] == OctreeBoundsT{ .center = { 0.0625f, 0.0625f }, .half_extent = 0.0625f });
+	REQUIRE(octree_bounds[4] == OctreeBoundsT{ .center = { 0.0625f, 0.1875f }, .half_extent = 0.0625f });
 }
 
 TEST_CASE("create 3-element quadtree whose nodes are not in traversal order (flat octree)", "[octree]")
@@ -314,14 +369,18 @@ TEST_CASE("create 3-element quadtree whose nodes are not in traversal order (fla
 	*/
 
 	using MortonT = detail::Morton<uint32_t, 2, 6>;
+	using OctreeBoundsT = OctreeBounds<MortonT::modulus>;
 	const vector<MortonT> keys{
 		0b000000, // A
 		0b000001, // B
 		0b000010  // C
 	};
 
-	vector<OctreeNode> octree_nodes = scalar::build_octree<MortonT>(keys);
+	vector<OctreeNode> octree_nodes;
+	vector<OctreeBoundsT> octree_bounds;
+	scalar::build_octree<MortonT>(keys, octree_nodes, octree_bounds);
 	REQUIRE(octree_nodes.size() == 6);
+	REQUIRE(octree_bounds.size() == octree_nodes.size());
 
 	REQUIRE(octree_nodes[0] == OctreeNode{ .parent = 0, .next = 0, .child = 1, .is_leaf = 0 });
 	REQUIRE(octree_nodes[1] == OctreeNode{ .parent = 0, .next = 0, .child = 2, .is_leaf = 0 });
@@ -334,6 +393,15 @@ TEST_CASE("create 3-element quadtree whose nodes are not in traversal order (fla
 
 	REQUIRE(octree_nodes[4] == OctreeNode{ .parent = 2, .next = 5, .child = 0, .is_leaf = 1 });
 	REQUIRE(octree_nodes[5] == OctreeNode{ .parent = 2, .next = 3, .child = 1, .is_leaf = 1 });
+
+	// Bounds. The three leafs share a level 2 cell and split at level 3, so they differ by one eighth.
+
+	REQUIRE(octree_bounds[0] == OctreeBoundsT{ .center = { 0.5f, 0.5f }, .half_extent = 0.5f });
+	REQUIRE(octree_bounds[1] == OctreeBoundsT{ .center = { 0.25f, 0.25f }, .half_extent = 0.25f });
+	REQUIRE(octree_bounds[2] == OctreeBoundsT{ .center = { 0.125f, 0.125f }, .half_extent = 0.125f });
+	REQUIRE(octree_bounds[3] == OctreeBoundsT{ .center = { 0.1875f, 0.0625f }, .half_extent = 0.0625f });
+	REQUIRE(octree_bounds[4] == OctreeBoundsT{ .center = { 0.0625f, 0.0625f }, .half_extent = 0.0625f });
+	REQUIRE(octree_bounds[5] == OctreeBoundsT{ .center = { 0.0625f, 0.1875f }, .half_extent = 0.0625f });
 }
 
 TEST_CASE("create 4-element quadtree with a childless block tail (flat octree)", "[octree]")
@@ -382,6 +450,7 @@ TEST_CASE("create 4-element quadtree with a childless block tail (flat octree)",
 	*/
 
 	using MortonT = detail::Morton<uint32_t, 2, 6>;
+	using OctreeBoundsT = OctreeBounds<MortonT::modulus>;
 	const vector<MortonT> keys{
 		0b000000, // A
 		0b000010, // B
@@ -389,8 +458,11 @@ TEST_CASE("create 4-element quadtree with a childless block tail (flat octree)",
 		0b000110  // D
 	};
 
-	vector<OctreeNode> octree_nodes = scalar::build_octree<MortonT>(keys);
+	vector<OctreeNode> octree_nodes;
+	vector<OctreeBoundsT> octree_bounds;
+	scalar::build_octree<MortonT>(keys, octree_nodes, octree_bounds);
 	REQUIRE(octree_nodes.size() == 8);
+	REQUIRE(octree_bounds.size() == octree_nodes.size());
 
 	REQUIRE(octree_nodes[0] == OctreeNode{ .parent = 0, .next = 0, .child = 1, .is_leaf = 0 });
 
@@ -404,6 +476,17 @@ TEST_CASE("create 4-element quadtree with a childless block tail (flat octree)",
 	REQUIRE(octree_nodes[5] == OctreeNode{ .parent = 1, .next = 0, .child = 6, .is_leaf = 0 });
 	REQUIRE(octree_nodes[6] == OctreeNode{ .parent = 5, .next = 7, .child = 2, .is_leaf = 1 });
 	REQUIRE(octree_nodes[7] == OctreeNode{ .parent = 5, .next = 0, .child = 3, .is_leaf = 1 });
+
+	// Bounds. The two level 2 cells are side by side in y, a quarter apart, each an eighth across.
+
+	REQUIRE(octree_bounds[0] == OctreeBoundsT{ .center = { 0.5f, 0.5f }, .half_extent = 0.5f });
+	REQUIRE(octree_bounds[1] == OctreeBoundsT{ .center = { 0.25f, 0.25f }, .half_extent = 0.25f });
+	REQUIRE(octree_bounds[2] == OctreeBoundsT{ .center = { 0.125f, 0.125f }, .half_extent = 0.125f });
+	REQUIRE(octree_bounds[3] == OctreeBoundsT{ .center = { 0.0625f, 0.0625f }, .half_extent = 0.0625f });
+	REQUIRE(octree_bounds[4] == OctreeBoundsT{ .center = { 0.1875f, 0.0625f }, .half_extent = 0.0625f });
+	REQUIRE(octree_bounds[5] == OctreeBoundsT{ .center = { 0.125f, 0.375f }, .half_extent = 0.125f });
+	REQUIRE(octree_bounds[6] == OctreeBoundsT{ .center = { 0.0625f, 0.3125f }, .half_extent = 0.0625f });
+	REQUIRE(octree_bounds[7] == OctreeBoundsT{ .center = { 0.1875f, 0.3125f }, .half_extent = 0.0625f });
 }
 
 TEST_CASE("create 5-element quadtree whose last radix node produces nothing (flat octree)", "[octree]")
@@ -463,6 +546,7 @@ TEST_CASE("create 5-element quadtree whose last radix node produces nothing (fla
 	*/
 
 	using MortonT = detail::Morton<uint32_t, 2, 6>;
+	using OctreeBoundsT = OctreeBounds<MortonT::modulus>;
 	const vector<MortonT> keys{
 		0b000000, // A
 		0b000011, // B
@@ -471,8 +555,11 @@ TEST_CASE("create 5-element quadtree whose last radix node produces nothing (fla
 		0b100000  // E
 	};
 
-	vector<OctreeNode> octree_nodes = scalar::build_octree<MortonT>(keys);
+	vector<OctreeNode> octree_nodes;
+	vector<OctreeBoundsT> octree_bounds;
+	scalar::build_octree<MortonT>(keys, octree_nodes, octree_bounds);
 	REQUIRE(octree_nodes.size() == 10);
+	REQUIRE(octree_bounds.size() == octree_nodes.size());
 
 	// the root's first child is oct 2, not oct 1: radix 0 resolves no level, so the first node
 	// of the range is found by descending past radix 3, which resolves none either
@@ -489,6 +576,19 @@ TEST_CASE("create 5-element quadtree whose last radix node produces nothing (fla
 	REQUIRE(octree_nodes[7] == OctreeNode{ .parent = 6, .next = 1, .child = 8, .is_leaf = 0 });
 	REQUIRE(octree_nodes[8] == OctreeNode{ .parent = 7, .next = 9, .child = 2, .is_leaf = 1 });
 	REQUIRE(octree_nodes[9] == OctreeNode{ .parent = 7, .next = 1, .child = 3, .is_leaf = 1 });
+
+	// Bounds. E's cell is a level 1 quadrant, the other two children are level 1 quadrants subdivided twice.
+
+	REQUIRE(octree_bounds[0] == OctreeBoundsT{ .center = { 0.5f, 0.5f }, .half_extent = 0.5f });
+	REQUIRE(octree_bounds[1] == OctreeBoundsT{ .center = { 0.75f, 0.25f }, .half_extent = 0.25f });
+	REQUIRE(octree_bounds[2] == OctreeBoundsT{ .center = { 0.25f, 0.25f }, .half_extent = 0.25f });
+	REQUIRE(octree_bounds[3] == OctreeBoundsT{ .center = { 0.125f, 0.125f }, .half_extent = 0.125f });
+	REQUIRE(octree_bounds[4] == OctreeBoundsT{ .center = { 0.0625f, 0.0625f }, .half_extent = 0.0625f });
+	REQUIRE(octree_bounds[5] == OctreeBoundsT{ .center = { 0.1875f, 0.1875f }, .half_extent = 0.0625f });
+	REQUIRE(octree_bounds[6] == OctreeBoundsT{ .center = { 0.25f, 0.75f }, .half_extent = 0.25f });
+	REQUIRE(octree_bounds[7] == OctreeBoundsT{ .center = { 0.125f, 0.625f }, .half_extent = 0.125f });
+	REQUIRE(octree_bounds[8] == OctreeBoundsT{ .center = { 0.0625f, 0.5625f }, .half_extent = 0.0625f });
+	REQUIRE(octree_bounds[9] == OctreeBoundsT{ .center = { 0.1875f, 0.6875f }, .half_extent = 0.0625f });
 }
 
 TEST_CASE("create 8-element octree, one body per octant (flat octree)", "[octree]")
@@ -537,13 +637,17 @@ TEST_CASE("create 8-element octree, one body per octant (flat octree)", "[octree
 	*/
 
 	using MortonT = detail::Morton<uint32_t, 3, 3>;
+	using OctreeBoundsT = OctreeBounds<MortonT::modulus>;
 	const vector<MortonT> keys{
 		0b000, 0b001, 0b010, 0b011,
 		0b100, 0b101, 0b110, 0b111
 	};
 
-	vector<OctreeNode> octree_nodes = scalar::build_octree<MortonT>(keys);
+	vector<OctreeNode> octree_nodes;
+	vector<OctreeBoundsT> octree_bounds;
+	scalar::build_octree<MortonT>(keys, octree_nodes, octree_bounds);
 	REQUIRE(octree_nodes.size() == 9);
+	REQUIRE(octree_bounds.size() == octree_nodes.size());
 
 	REQUIRE(octree_nodes[0] == OctreeNode{ .parent = 0, .next = 0, .child = 1, .is_leaf = 0 });
 	REQUIRE(octree_nodes[1] == OctreeNode{ .parent = 0, .next = 2, .child = 0, .is_leaf = 1 });
@@ -554,4 +658,16 @@ TEST_CASE("create 8-element octree, one body per octant (flat octree)", "[octree
 	REQUIRE(octree_nodes[6] == OctreeNode{ .parent = 0, .next = 7, .child = 5, .is_leaf = 1 });
 	REQUIRE(octree_nodes[7] == OctreeNode{ .parent = 0, .next = 8, .child = 6, .is_leaf = 1 });
 	REQUIRE(octree_nodes[8] == OctreeNode{ .parent = 0, .next = 0, .child = 7, .is_leaf = 1 });
+
+	// Bounds. One body per octant, so every leaf is a corner of the unit cube.
+
+	REQUIRE(octree_bounds[0] == OctreeBoundsT{ .center = { 0.5f, 0.5f, 0.5f }, .half_extent = 0.5f });
+	REQUIRE(octree_bounds[1] == OctreeBoundsT{ .center = { 0.25f, 0.25f, 0.25f }, .half_extent = 0.25f });
+	REQUIRE(octree_bounds[2] == OctreeBoundsT{ .center = { 0.25f, 0.25f, 0.75f }, .half_extent = 0.25f });
+	REQUIRE(octree_bounds[3] == OctreeBoundsT{ .center = { 0.25f, 0.75f, 0.25f }, .half_extent = 0.25f });
+	REQUIRE(octree_bounds[4] == OctreeBoundsT{ .center = { 0.25f, 0.75f, 0.75f }, .half_extent = 0.25f });
+	REQUIRE(octree_bounds[5] == OctreeBoundsT{ .center = { 0.75f, 0.25f, 0.25f }, .half_extent = 0.25f });
+	REQUIRE(octree_bounds[6] == OctreeBoundsT{ .center = { 0.75f, 0.25f, 0.75f }, .half_extent = 0.25f });
+	REQUIRE(octree_bounds[7] == OctreeBoundsT{ .center = { 0.75f, 0.75f, 0.25f }, .half_extent = 0.25f });
+	REQUIRE(octree_bounds[8] == OctreeBoundsT{ .center = { 0.75f, 0.75f, 0.75f }, .half_extent = 0.25f });
 }

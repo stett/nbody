@@ -118,10 +118,31 @@ namespace nbody::detail
 
         // Scale one normalized value into `axis_bits` bits, then spread those bits `modulus`
         // apart so the other axes can be laid between them.
+        //
+        // The scale is 2^axis_bits, not the largest value those bits hold. A tree reads the bits
+        // as a path: each one halves the axis, so bit pattern k has to name the cell
+        // [k / 2^axis_bits, (k+1) / 2^axis_bits). Scaling by 2^axis_bits - 1 instead lays out
+        // cells of width 1 / (2^axis_bits - 1), which drift against those by up to a whole cell
+        // -- at ten bits per axis, half of the unit interval lands outside the cell its own code
+        // names. The bounds an octree derives from a code would then not contain the position it
+        // came from.
+        //
+        // The scale is built as axis_max + 1 rather than by shifting, since axis_bits may be the
+        // full width of the word. It is exact in ArgT for every width that reaches here: below
+        // 2^24 because the values are small integers, and at 32 because 2^32 is a power of two.
         template <typename BitsT, size_t modulus, size_t axis_bits, typename ArgT>
         constexpr BitsT _interleave_axis(const ArgT arg)
         {
-            const BitsT scaled = static_cast<BitsT>(arg * static_cast<ArgT>(axis_max<BitsT, axis_bits>));
+            constexpr ArgT scale = static_cast<ArgT>(axis_max<BitsT, axis_bits>) + static_cast<ArgT>(1);
+
+            // arg is normalized, so only arg == 1 reaches the top, and it belongs in the last
+            // cell rather than in a wrapped-around first one. Clamped before the cast, because
+            // afterwards the overflow has already happened.
+            const ArgT offset = arg * scale;
+            const BitsT scaled = (offset >= scale)
+                ? axis_max<BitsT, axis_bits>
+                : static_cast<BitsT>(offset);
+
             return expand_bits<BitsT, BitsT, modulus>(scaled);
         }
 
