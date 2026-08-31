@@ -41,6 +41,7 @@ namespace
     // values no correct build can produce.
     constexpr Node unwritten{ INT32_MIN, INT32_MIN };
     constexpr int32_t unwritten_delta = INT32_MIN;
+    constexpr NodeCount unwritten_node_count{ INT32_MIN, INT32_MIN };
 
     // The bits a key may set: everything Morton's constructor will not shift off the top. Two
     // patterns that differ only above this are the same key, so the mask has to be applied
@@ -152,7 +153,7 @@ namespace
 
     Tree empty_tree(const size_t num_nodes)
     {
-        return { Nodes(num_nodes, unwritten), Deltas(num_nodes, unwritten_delta) };
+        return { Nodes(num_nodes, unwritten), Deltas(num_nodes, unwritten_delta), NodeCounts(num_nodes, unwritten_node_count) };
     }
 
     template <typename MortonT>
