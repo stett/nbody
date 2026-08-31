@@ -76,12 +76,12 @@ TEST_CASE("create 6-element quadtree (flat octree)", "[octree]")
 {
 	using MortonT = detail::Morton<uint32_t, 2, 6>;
 	const vector<MortonT> keys{
-		000111,
-		010100,
-		100011,
-		101000,
-		110001,
-		110100
+		0b000111,
+		0b010100,
+		0b100011,
+		0b101000,
+		0b110001,
+		0b110100
 	};
 
 	// build the octree

@@ -97,7 +97,6 @@ namespace nbody::detail
                 octree_nodes[i_node_0].parent = find_octree_parent(i_radix);
 
                 // populate corresponding intermediate nodes
-                //for (; i_node < i_node_0 + node_count.internals; ++i_node)
                 for (int32_t i_internal = 0; i_internal < node_count.internals; ++i_internal)
                 {
                     const int32_t i_node = i_node_0 + i_internal;
@@ -117,8 +116,30 @@ namespace nbody::detail
                     octree_nodes[i_node].is_leaf = false;
                 }
 
+                // make a temp function for getting the next leaf index
+                int32_t i_radix_leaf_node = i_radix; // index to track the current radix leaf index
+                bool i_radix_leaf_child = 0;
+                const auto next_leaf = [&]() -> int32_t
+                {
+                    while (true)
+                    {
+                        const RadixNode& radix_leaf_node = radix_nodes[i_radix_leaf_node];
+                        const int32_t i_key = i_radix_leaf_child == 0 ? radix_leaf_node.child0_index : radix_leaf_node.child1_index;
+                        i_radix_leaf_child = !i_radix_leaf_child;
+                        if (!i_radix_leaf_child)
+                        {
+                            ++i_radix_leaf_node;
+                        }
+
+                        if (i_key >= 0)
+                        {
+                            assert(i_key < keys.size());
+                            return i_key;
+                        }
+                    }
+                };
+
                 // populate corresponding leaf nodes after the internals
-                //for (; i_node < i_node_0 + node_count.internals + node_count.leafs; ++i_node)
                 for (int32_t i_leaf = 0; i_leaf < node_count.leafs; ++i_leaf)
                 {
                     const int32_t i_node = i_node_0 + node_count.internals + i_leaf;
@@ -136,8 +157,13 @@ namespace nbody::detail
                     // with intermediate nodes
                     octree_nodes[i_node].next = i_node + 1 < octree_nodes.size() ? i_node + 1 : 0;
 
-                    // for leaf nodes, the child index will indicate an index into the original keys array
-                    octree_nodes[i_node].child = i_radix + i_leaf;
+                    // for leaf nodes, the child index will indicate an index into the original keys array.
+                    //
+                    // this octree node might span many leaf nodes
+                    //const RadixNode& leaf_radix = radix_nodes[i_radix + (i_leaf / 2)];
+                    //if (leaf_radix.child0_index)
+                    //octree_nodes[i_node].child = (i_leaf % 2) ? leaf_radix.child0_index : leaf_radix.child1_index;
+                    octree_nodes[i_node].child = next_leaf();
 
                     // TODO: pack this value into the child node's sign bit
                     octree_nodes[i_node].is_leaf = true;

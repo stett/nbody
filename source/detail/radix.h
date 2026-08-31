@@ -172,12 +172,10 @@ namespace nbody::detail
                 nodes[node_index].child1_index = child1;
                 //node_cpl_deltas[i] = (dnode / modulus) - (max(dmin, 0) / modulus);
                 //node_child_counts[i] = (child0 >= 0) + (child1 >= 0);
-                node_counts[i].internals = (dnode / modulus) - (max(dmin, 0) / modulus);
-                node_counts[i].leafs = (child0 >= 0) + (child1 >= 0);
-                if (child0 <= 0) node_parents[-child0] = i;
-                if (child1 <= 0) node_parents[-child1] = i;
-                //node_parents[k] = i;
-                //node_parents[k + 1] = i;
+                node_counts[node_index].internals = (dnode / modulus) - (max(dmin, 0) / modulus);
+                node_counts[node_index].leafs = (child0 >= 0) + (child1 >= 0);
+                if (child0 <= 0) node_parents[-child0 - node_offset] = i;
+                if (child1 <= 0) node_parents[-child1 - node_offset] = i;
             }
         }
     }
