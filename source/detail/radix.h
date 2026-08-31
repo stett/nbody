@@ -1,4 +1,5 @@
 #pragma once
+#include <concepts>
 #include <cstdint>
 #include <cassert>
 #include <span>
@@ -20,11 +21,6 @@ namespace nbody::detail
 
     struct RadixNode
     {
-        // Difference between the parent's common prefix lenght and this node's
-        //int32_t depth_delta;
-        //int32_t cpl;
-        //int32_t cpl_parent;
-
         // Indices of left and right children.
         // Negative values indicate that the child is an internal node.
         // Positive values indicate that the child is a leaf node, and the value is the index of the key in the sorted list.
@@ -32,24 +28,47 @@ namespace nbody::detail
         int32_t child1_index;
     };
 
+    struct NodeCount
+    {
+        int32_t internals = 0;
+        int32_t leafs = 0;
+    };
+
+    /*
+    inline int32_t operator+(const NodeCount lhs, const NodeCount rhs)
+    {
+        return lhs.internals + lhs.leafs + rhs.internals + rhs.leafs;
+    }
+    */
+
+    //int32_t std::plus<NodeCount>(NodeCount a, NodeCount b)
+
     // Two interchangeable implementations of the same construction, differing only in how
     // they compute it. Both are held to one oracle by the differential tests in
     // tests/source/test_radix.cpp, which run every case against each of them, so the pair
     // can be compared for agreement as well as for speed.
     //
-    // `scalar` is an inline namespace, so unqualified nbody::detail::radix_tree still names
-    // it and callers get the plain implementation unless they ask for another by name.
+    // `parallel` below is the inline namespace, so unqualified nbody::detail::radix_tree names
+    // the thread pool version. Both are templates now, so a dependent call sees the two through
+    // ADL and has to say which it wants: qualify as scalar:: or parallel::.
     namespace scalar
     {
         // compute the length of the common prefix between two keys
-        template <typename BitsT>
-        BitsT cpl(const BitsT& a, const BitsT& b)
+        //
+        // int32_t rather than BitsT because the index form below reports a missing neighbour as
+        // -1, and every comparison against that sentinel is signed.
+        template <std::unsigned_integral BitsT>
+        int32_t cpl(const BitsT a, const BitsT b)
         {
-            return std::countl_zero(a ^ b);
+            return std::countl_zero(static_cast<BitsT>(a ^ b));
         }
 
-        template <typename BitsT, size_t modulus>
-        BitsT cpl(const Morton<BitsT, modulus>& m0, const Morton<BitsT, modulus>& m1)
+        // Matched on the interface rather than on Morton's parameter list, which stops matching
+        // whenever the class gains a parameter -- and would then fall through to the overload
+        // above, where `a ^ b` is not even valid.
+        template <typename MortonT>
+        requires requires(const MortonT& m) { m.bits(); }
+        int32_t cpl(const MortonT& m0, const MortonT& m1)
         {
             return cpl(m0.bits(), m1.bits());
         }
@@ -65,7 +84,7 @@ namespace nbody::detail
             return cpl(sorted_keys[i], sorted_keys[j]);
         }
 
-        int32_t sign(const int32_t x)
+        inline int32_t sign(const int32_t x)
         {
             return (x > 0) - (x < 0);
         }
@@ -78,7 +97,14 @@ namespace nbody::detail
         // Algorithm from (1), section 3.2
         //template <typename MortonT = Morton<>>
         template <typename MortonT>
-        void radix_tree(const span<const MortonT> sorted_keys, const span<RadixNode> nodes, const span<int32_t> node_parents, const span<int32_t> node_cpl_deltas, const int32_t node_offset = 0)
+        void radix_tree(
+            const span<const MortonT> sorted_keys,
+            const span<RadixNode> nodes,
+            const span<int32_t> node_parents,
+            const span<NodeCount> node_counts,
+            //const span<int32_t> node_cpl_deltas,
+            //const span<int32_t> node_child_counts,
+            const int32_t node_offset = 0)
         {
             NBODY_PROFILE_ZONE_NAMED("radix_tree (scalar)");
 
@@ -141,11 +167,17 @@ namespace nbody::detail
                 const int32_t node_index = i - node_offset;
                 const int32_t child0 = (min(i, j) == k ? 1 : -1) * k;
                 const int32_t child1 = (max(i, j) == k + 1 ? 1 : -1) * (k + 1);
+                static constexpr size_t modulus = MortonT::modulus;
                 nodes[node_index].child0_index = child0;
                 nodes[node_index].child1_index = child1;
-                node_cpl_deltas[i] = (dnode / MortonT::modulus) - (max(dmin, 0) / MortonT::modulus);
-                node_parents[k] = i;
-                node_parents[k + 1] = i;
+                //node_cpl_deltas[i] = (dnode / modulus) - (max(dmin, 0) / modulus);
+                //node_child_counts[i] = (child0 >= 0) + (child1 >= 0);
+                node_counts[i].internals = (dnode / modulus) - (max(dmin, 0) / modulus);
+                node_counts[i].leafs = (child0 >= 0) + (child1 >= 0);
+                if (child0 <= 0) node_parents[-child0] = i;
+                if (child1 <= 0) node_parents[-child1] = i;
+                //node_parents[k] = i;
+                //node_parents[k + 1] = i;
             }
         }
     }
@@ -170,8 +202,11 @@ namespace nbody::detail
         // Parallelized version of any of the radix_tree implementations, which can be selected by the `impl` template parameter.
         //
         // This version of the algorithm must receive the full range of keys and nodes.
-        template <typename KeyT, auto* impl = scalar::radix_tree>
-        void radix_tree_thread_pool(BS::thread_pool& pool, const span<const KeyT> sorted_keys, const span<RadixNode> nodes, const span<int32_t> node_parents, const span<int32_t> node_cpl_deltas, const int32_t node_cpl_modulus = 1, int32_t node_offset = 0)
+        // KeyT is named first so the default implementation can refer to it: the level
+        // arithmetic now comes from KeyT::modulus, so an implementation is only selectable
+        // once the key type is fixed.
+        template <typename KeyT, auto* impl = scalar::radix_tree<KeyT>>
+        void radix_tree_thread_pool(BS::thread_pool& pool, const span<const KeyT> sorted_keys, const span<RadixNode> nodes, const span<int32_t> node_parents, const span<int32_t> node_cpl_deltas, int32_t node_offset = 0)
         {
             NBODY_PROFILE_ZONE_NAMED("radix_tree (parallel)");
             assert(node_offset == 0);
@@ -179,16 +214,16 @@ namespace nbody::detail
             detail::parallel_blocks(pool, nodes.size(),
                 [&](const size_t begin, const size_t end)
                 {
-                    impl(sorted_keys, nodes.subspan(begin, end - begin), node_parents, node_cpl_deltas, node_cpl_modulus, begin);
+                    impl(sorted_keys, nodes.subspan(begin, end - begin), node_parents, node_cpl_deltas, static_cast<int32_t>(begin));
                 }
             );
         }
 
-        template <typename KeyT = Morton<>, auto* impl = scalar::radix_tree>
-        void radix_tree(const span<const KeyT> sorted_keys, const span<RadixNode> nodes, const span<int32_t> node_parents, const span<int32_t> node_cpl_deltas, const int32_t node_cpl_modulus = 1, int32_t node_offset = 0)
+        template <typename KeyT = Morton<>, auto* impl = scalar::radix_tree<KeyT>>
+        void radix_tree(const span<const KeyT> sorted_keys, const span<RadixNode> nodes, const span<int32_t> node_parents, const span<int32_t> node_cpl_deltas, int32_t node_offset = 0)
         {
             static BS::thread_pool pool;
-            radix_tree_thread_pool(pool, sorted_keys, nodes, node_parents, node_cpl_deltas, node_cpl_modulus, node_offset);
+            radix_tree_thread_pool<KeyT, impl>(pool, sorted_keys, nodes, node_parents, node_cpl_deltas, node_offset);
         }
     }
 }

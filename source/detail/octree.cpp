@@ -33,6 +33,7 @@ namespace nbody::detail
             //return 1 + node_offsets.back();
         }
 
+        /*
         // compute the nodes of an octree into pre-allocated list of nodes
         void octree(const span<const RadixNode> radix_nodes, const span<const int32_t> radix_node_parents, const span<const int32_t> radix_node_cpl_deltas, const span<const int32_t> node_offsets, const span<OctreeNode> octree_nodes)
         {
@@ -95,7 +96,7 @@ namespace nbody::detail
             vector<RadixNode> radix_nodes(keys.size() - 1);
             vector<int32_t> radix_node_parents(radix_nodes.size());
             vector<int32_t> radix_node_cpl_deltas(radix_nodes.size());
-            radix_tree<Morton<>>(keys, radix_nodes, radix_node_parents, radix_node_cpl_deltas);
+            parallel::radix_tree<Morton<>>(keys, radix_nodes, radix_node_parents, radix_node_cpl_deltas);
 
             // get octree node offests for each radix tree node
             vector<int32_t> node_offests(radix_nodes.size());
@@ -105,5 +106,6 @@ namespace nbody::detail
             octree_nodes.resize(octree_node_count);
             octree(radix_nodes, node_offests, octree_nodes);
         }
+    */
     }
 }

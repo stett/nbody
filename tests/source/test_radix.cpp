@@ -1,19 +1,17 @@
-#include <atomic>
 #include <algorithm>
+#include <bit>
 #include <cstdlib>
 #include <random>
 #include <span>
 #include <string>
 #include <vector>
 #include <catch2/catch_test_macros.hpp>
-#include <catch2/generators/catch_generators.hpp>
-#include <bit>
+#include "detail/morton.h"
 #include "detail/radix.h"
 
 namespace
 {
     using std::vector;
-    using std::pair;
     using std::span;
     using std::countl_zero;
     using namespace nbody::detail;
@@ -21,26 +19,50 @@ namespace
     using Node = RadixNode;
     using Nodes = vector<Node>;
     using Deltas = vector<int32_t>;
-    using Keys = vector<uint32_t>;
+    using NodeCounts = vector<NodeCount>;
 
-    // A node's prefix increment used to be RadixNode::depth_delta; it now comes back in a
-    // span running parallel to the nodes, so a built tree is the two of them together and
-    // every case has to check both halves.
+    // Cases write their keys as raw interleaved patterns rather than deriving them from
+    // positions, since the tree only ever reads the bits. Morton's constructor left-aligns what
+    // it is handed by its own padding, and that convention is what makes cpl / modulus a level.
+    using Bits = uint32_t;
+    using Keys = vector<Bits>;
+
+    // A node's prefix increment used to be RadixNode::depth_delta; it now comes back in a span
+    // running parallel to the nodes, so a built tree is the two of them together and every case
+    // has to check both halves.
     struct Tree
     {
         Nodes nodes;
         Deltas cpl_deltas;
+        NodeCounts node_counts;
     };
 
-    // Fillers for what no builder has written yet. Every field is checked, so these have to
-    // be values no correct build can produce.
+    // Fillers for what no builder has written yet. Every field is checked, so these have to be
+    // values no correct build can produce.
     constexpr Node unwritten{ INT32_MIN, INT32_MIN };
     constexpr int32_t unwritten_delta = INT32_MIN;
 
-    // The increments are compared as raw bit counts, which is what a modulus of one asks the
-    // builder for. Folding several bits into one octree level is a different contract and is
-    // not covered here.
-    constexpr int32_t cpl_modulus = 1;
+    // The bits a key may set: everything Morton's constructor will not shift off the top. Two
+    // patterns that differ only above this are the same key, so the mask has to be applied
+    // before the uniqueness pass rather than after it.
+    template <typename MortonT>
+    constexpr Bits key_mask = static_cast<Bits>(~Bits{ 0 } >> MortonT::padding);
+
+    // The level a prefix length lands in: whole groups of `modulus` bits counted down from the
+    // top of the word. An out of range neighbour reports -1, which is the domain root, level 0 --
+    // the same clamp radix_tree applies, and the reason the increments no longer carry the extra
+    // step they used to when the root measured from -1.
+    template <typename MortonT>
+    int32_t level(const int32_t cpl)
+    {
+        return std::max(cpl, 0) / static_cast<int32_t>(MortonT::modulus);
+    }
+
+    template <typename MortonT>
+    int32_t key_cpl(const MortonT& a, const MortonT& b)
+    {
+        return static_cast<int32_t>(countl_zero(static_cast<Bits>(a.bits() ^ b.bits())));
+    }
 
     // Compared field by field rather than through an operator==, which would have to live in
     // nbody::detail to be found by ADL from inside std::equal.
@@ -57,30 +79,33 @@ namespace
             + ", right " + std::to_string(node.child1_index) + " }";
     }
 
-    // for the tests, we'll use morton codes
-    using MortonT = Morton<uint32_t, 3>;
-
-    // Every implementation of the construction must produce the same tree, so each one is
-    // held to the same oracle rather than to the others. Naming them here means a new
-    // implementation is covered by every case below the moment it is added to this list,
-    // and a failure reports which one diverged.
+    // Every implementation of the construction must produce the same tree, so each one is held
+    // to the same oracle rather than to the others. Naming them here means a new implementation
+    // is covered by every case below the moment it is added to this list, and a failure reports
+    // which one diverged.
+    template <typename MortonT>
     struct Builder
     {
         const char* name;
-        void (*build)(span<const MortonT>, span<Node>, span<int32_t>, span<int32_t>, int32_t);
+        void (*build)(span<const MortonT>, span<Node>, span<int32_t>, span<NodeCount>, int32_t);
         bool supports_partial_build;
     };
 
-    constexpr Builder builders[]{
+    template <typename MortonT>
+    constexpr Builder<MortonT> builders[]{
         { "scalar",             &scalar::radix_tree<MortonT>, true },
-        //{ "simd",               &simd::radix_tree  , true },
-        { "parallel-scalar",    &parallel::radix_tree<scalar::radix_tree<MortonT>>, false },
-        //{ "parallel-simd",      &parallel::radix_tree<simd::radix_tree>  , false },
+        //{ "simd",             &simd::radix_tree<MortonT>  , true },
+        //{ "parallel-scalar",    &parallel::radix_tree<MortonT>, false },
     };
 
-    int32_t key_cpl(const uint32_t a, const uint32_t b)
+    template <typename MortonT>
+    vector<MortonT> morton_keys(const Keys& bits)
     {
-        return static_cast<int32_t>(countl_zero(a ^ b));
+        vector<MortonT> keys;
+        keys.reserve(bits.size());
+        for (const Bits pattern : bits)
+            keys.push_back(MortonT(pattern));
+        return keys;
     }
 
     // Reference tree builder, used as an oracle for the implementation under test.
@@ -92,11 +117,12 @@ namespace
     // The node index of a child is known up front because the children of a range split at k
     // are always k and k+1, which is the same convention radix_tree() emits.
     //
-    // The prefix increment comes for free here. radix_tree() has to recover the parent's
-    // prefix length from its neighbours (as `dmin`), but a top-down recursion already holds
-    // it, so the two arrive at the same number by genuinely different routes.
-    void reference_tree(const Keys& keys, const int32_t a, const int32_t b, const int32_t index,
-                        const int32_t parent_prefix, Tree& tree)
+    // The prefix increment comes for free here. radix_tree() has to recover the parent's prefix
+    // length from its neighbours (as `dmin`), but a top-down recursion already holds it, so the
+    // two arrive at the same number by genuinely different routes.
+    template <typename MortonT>
+    void reference_tree(const vector<MortonT>& keys, const int32_t a, const int32_t b,
+                        const int32_t index, const int32_t parent_prefix, Tree& tree)
     {
         assert(a < b);
 
@@ -114,10 +140,9 @@ namespace
             (k + 1 == b ? 1 : -1) * (k + 1),
         };
 
-        // radix_tree() divides both prefix lengths by the modulus before subtracting, which
-        // is the same subtraction only while the modulus is one
-        static_assert(cpl_modulus == 1, "the oracle measures increments in whole bits");
-        tree.cpl_deltas[index] = prefix - parent_prefix;
+        // the increment counts level boundaries crossed, so both ends are folded to a level
+        // before subtracting -- not after, which would count bits instead
+        tree.cpl_deltas[index] = level<MortonT>(prefix) - level<MortonT>(parent_prefix);
 
         if (k != a)
             reference_tree(keys, a, k, k, prefix, tree);
@@ -130,18 +155,20 @@ namespace
         return { Nodes(num_nodes, unwritten), Deltas(num_nodes, unwritten_delta) };
     }
 
-    Tree reference_tree(const Keys& keys)
+    template <typename MortonT>
+    Tree reference_tree(const vector<MortonT>& keys)
     {
         Tree tree = empty_tree(keys.size() - 1);
 
-        // The root has no parent. radix_tree() reads the missing neighbour through index_cpl,
-        // which reports out of range as -1, so the root's increment is measured from -1 and
-        // the oracle has to start from the same place.
+        // The root has no parent. radix_tree() reads the missing neighbour through cpl(), which
+        // reports out of range as -1 and then clamps it to level 0, so the oracle starts from
+        // the same place.
         reference_tree(keys, 0, static_cast<int32_t>(keys.size()) - 1, 0, -1, tree);
         return tree;
     }
 
-    Tree actual_tree(const Builder& builder, const Keys& keys, const size_t num_nodes)
+    template <typename MortonT>
+    Tree actual_tree(const Builder<MortonT>& builder, const vector<MortonT>& keys, const size_t num_nodes)
     {
         Tree tree = empty_tree(num_nodes);
 
@@ -150,19 +177,14 @@ namespace
         // not asserted on here.
         vector<int32_t> parents(keys.size(), unwritten_delta);
 
-        builder.build(keys, tree.nodes, parents, tree.cpl_deltas, cpl_modulus, 0);
+        builder.build(keys, tree.nodes, parents, tree.node_counts, 0);
         return tree;
-    }
-
-    Tree actual_tree(const Builder& builder, const Keys& keys)
-    {
-        return actual_tree(builder, keys, keys.size() - 1);
     }
 
     std::string describe(const Keys& keys)
     {
         std::string s;
-        for (const uint32_t key : keys)
+        for (const Bits key : keys)
             s += std::to_string(key) + " ";
         return s;
     }
@@ -171,10 +193,11 @@ namespace
     // keys themselves rather than against either builder.
     //
     // Walking down from the root reaches all n leaves and all n-1 internal nodes exactly once.
-    // The walk also carries each node's key range, which makes the child indices, the leaf
-    // flags and the increments all checkable in passing: the range determines where the split
-    // must fall, and the prefix length of the range determines what the increments must sum to.
-    void check_structure(const Keys& keys, const Tree& tree)
+    // The walk also carries each node's key range, which makes the child indices, the leaf flags
+    // and the increments all checkable in passing: the range determines where the split must
+    // fall, and the prefix length of the range determines what the increments must sum to.
+    template <typename MortonT>
+    void check_structure(const vector<MortonT>& keys, const Tree& tree)
     {
         const int32_t num_keys = static_cast<int32_t>(keys.size());
         const int32_t num_nodes = static_cast<int32_t>(tree.nodes.size());
@@ -202,13 +225,18 @@ namespace
 
             const Node& node = tree.nodes[frame.index];
 
-            // a child always resolves at least one bit more than its parent, so the increment
-            // is never zero
-            REQUIRE(tree.cpl_deltas[frame.index] >= 1);
+            // A child resolves at least one bit more than its parent, but a bit is only a level
+            // once `modulus` of them have accumulated, so an increment is zero exactly when a
+            // node splits inside its parent's level. At a modulus of one every node is its own
+            // level, so only the root may be zero there: it measures from the domain root at
+            // level 0, and its own prefix is empty when the outermost keys differ in the top
+            // bit. Node 0 is always the root.
+            const int32_t min_delta = (MortonT::modulus == 1 && frame.index != 0) ? 1 : 0;
+            REQUIRE(tree.cpl_deltas[frame.index] >= min_delta);
 
-            // the increments telescope: summed from the root they reach this range's own prefix
-            // length, offset by one because the root measures from the absent parent's -1
-            REQUIRE(frame.delta_sum == key_cpl(keys[frame.first], keys[frame.last]) + 1);
+            // the increments telescope: summed from the root they reach the level this range's
+            // own prefix length falls in
+            REQUIRE(frame.delta_sum == level<MortonT>(key_cpl(keys[frame.first], keys[frame.last])));
 
             // both children name the split, so either index recovers it and they must agree
             const int32_t k = std::abs(node.child0_index);
@@ -216,9 +244,9 @@ namespace
             REQUIRE(k < frame.last);
             REQUIRE(std::abs(node.child1_index) == k + 1);
 
-            // a child is a leaf exactly when its side of the split is a single key, and the
-            // sign of the stored index has to say so. index 0 is unambiguous despite -0 == 0,
-            // because internal node 0 is always the root and so is never a child.
+            // a child is a leaf exactly when its side of the split is a single key, and the sign
+            // of the stored index has to say so. index 0 is unambiguous despite -0 == 0, because
+            // internal node 0 is always the root and so is never a child.
             const bool left_is_leaf = (k == frame.first);
             const bool right_is_leaf = (k + 1 == frame.last);
             REQUIRE((node.child0_index >= 0) == left_is_leaf);
@@ -264,35 +292,60 @@ namespace
         }
     }
 
-    void check_tree(const Keys& keys)
+    // Karras' construction requires strictly increasing keys, and the mask has to come first:
+    // patterns differing only in the bits Morton shifts away are the same key.
+    template <typename MortonT>
+    Keys sanitize(Keys keys)
     {
-        INFO("keys: " << describe(keys));
+        for (Bits& key : keys)
+            key &= key_mask<MortonT>;
+        std::sort(keys.begin(), keys.end());
+        keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
+        return keys;
+    }
+
+    template <typename MortonT>
+    void check_tree(const Keys& raw)
+    {
+        const Keys bits = sanitize<MortonT>(raw);
+        if (bits.size() < 2)
+            return;
+
+        INFO("modulus: " << MortonT::modulus);
+        INFO("keys: " << describe(bits));
+
+        const vector<MortonT> keys = morton_keys<MortonT>(bits);
 
         // built once: the oracle does not depend on which implementation is under test
         const Tree expected = reference_tree(keys);
 
-        for (const Builder& builder : builders)
+        for (const Builder<MortonT>& builder : builders<MortonT>)
         {
             INFO("builder: " << builder.name);
-            const Tree actual = actual_tree(builder, keys);
+            const Tree actual = actual_tree(builder, keys, keys.size() - 1);
             check_nodes(actual, expected, expected.nodes.size());
             check_structure(keys, actual);
         }
     }
 
-    // Karras' construction requires strictly increasing keys.
-    Keys sanitize(Keys keys)
+    // Every case runs at each modulus. The level arithmetic is the only thing the modulus
+    // changes, and it is exactly where the radix tree meets the octree, so a case that only ran
+    // at one of them would leave that seam untested.
+    void check_tree_all_moduli(const Keys& keys)
     {
-        std::sort(keys.begin(), keys.end());
-        keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
-        return keys;
+        check_tree<Morton<uint32_t, 1>>(keys);
+        check_tree<Morton<uint32_t, 2>>(keys);
+        check_tree<Morton<uint32_t, 3>>(keys);
     }
 }
 
 TEST_CASE("radix tree", "[radix]")
 {
-    SECTION("hand computed")
+    SECTION("hand computed, bit level")
     {
+        // A modulus of one makes every resolved bit its own level, so the increments are plain
+        // prefix length differences and can be read straight off the key bits.
+        //
         // must be ordered
         const Keys keys{
             0b00001,
@@ -309,7 +362,7 @@ TEST_CASE("radix tree", "[radix]")
         // [0,3] splitting at 1, node 1 covers [0,1] splitting at 0, node 2 covers [2,3], and
         // node 4 covers [4,5]. Their prefix lengths (as 32 bit counts, so 27 means the keys
         // first differ at bit 4) are 27, 28, 30, 29 and 29, and each increment is that prefix
-        // minus its parent's - the root measuring from -1, giving 27 - (-1) = 28.
+        // minus its parent's -- the root measuring from the domain root at level 0, so 27.
         const Tree expected{
             Nodes{
                 { -3, -4 },
@@ -318,29 +371,73 @@ TEST_CASE("radix tree", "[radix]")
                 { -1, -2 },
                 {  4,  5 },
             },
-            Deltas{ 28, 2, 1, 1, 2 },
+            Deltas{ 27, 2, 1, 1, 2 },
         };
+
+        using MortonT = Morton<uint32_t, 1>;
+        const vector<MortonT> morton = morton_keys<MortonT>(keys);
 
         // the reference builder must reproduce the case we worked out by hand, otherwise it is
         // not fit to serve as an oracle for everything below
-        const Tree reference = reference_tree(keys);
+        const Tree reference = reference_tree(morton);
         REQUIRE(reference.nodes.size() == expected.nodes.size());
         {
             INFO("builder: reference");
             check_nodes(reference, expected, expected.nodes.size());
         }
 
-        for (const Builder& builder : builders)
+        for (const Builder<MortonT>& builder : builders<MortonT>)
         {
             INFO("builder: " << builder.name);
-            check_nodes(actual_tree(builder, keys), expected, expected.nodes.size());
+            check_nodes(actual_tree(builder, morton, expected.nodes.size()), expected, expected.nodes.size());
+        }
+    }
+
+    SECTION("hand computed quadtree")
+    {
+        // The same case test_octree.cpp builds on: 2d morton codes, three levels of two bits,
+        // left-aligned so the level boundaries start at the top of the word.
+        //
+        //   0. (1,5) -> (001, 101) -> 010011
+        //   1. (4,1) -> (100, 001) -> 100101
+        //   2. (5,1) -> (101, 001) -> 100111
+        constexpr int32_t key_bits = 6;
+        const Keys keys{
+            0b010011u << (32 - key_bits),
+            0b100101u << (32 - key_bits),
+            0b100111u << (32 - key_bits),
+        };
+
+        // Keys 1 and 2 share the first two levels, so node 1 sits at level 2 and creates both
+        // of them; the root splits inside level 1 and so creates nothing beyond the domain root.
+        const Tree expected{
+            Nodes{
+                { 0, -1 },
+                { 1,  2 },
+            },
+            Deltas{ 0, 2 },
+        };
+
+        using MortonT = Morton<uint32_t, 2>;
+        const vector<MortonT> morton = morton_keys<MortonT>(keys);
+
+        const Tree reference = reference_tree(morton);
+        {
+            INFO("builder: reference");
+            check_nodes(reference, expected, expected.nodes.size());
+        }
+
+        for (const Builder<MortonT>& builder : builders<MortonT>)
+        {
+            INFO("builder: " << builder.name);
+            check_nodes(actual_tree(builder, morton, expected.nodes.size()), expected, expected.nodes.size());
         }
     }
 
     SECTION("two keys")
     {
-        check_tree(Keys{ 0b0, 0b1 });
-        check_tree(Keys{ 0x00000000u, 0xFFFFFFFFu });
+        check_tree_all_moduli(Keys{ 0b0, 0b1 });
+        check_tree_all_moduli(Keys{ 0x00000000u, 0xFFFFFFFFu });
     }
 
     SECTION("dense low keys")
@@ -350,8 +447,8 @@ TEST_CASE("radix tree", "[radix]")
         {
             Keys keys(num_keys);
             for (int32_t i = 0; i < num_keys; ++i)
-                keys[i] = static_cast<uint32_t>(i);
-            check_tree(keys);
+                keys[i] = static_cast<Bits>(i);
+            check_tree_all_moduli(keys);
         }
     }
 
@@ -361,7 +458,7 @@ TEST_CASE("radix tree", "[radix]")
         Keys keys{ 0 };
         for (int32_t bit = 0; bit < 30; ++bit)
             keys.push_back(1u << bit);
-        check_tree(sanitize(keys));
+        check_tree_all_moduli(keys);
     }
 
     SECTION("wide split")
@@ -372,7 +469,7 @@ TEST_CASE("radix tree", "[radix]")
             keys.push_back(i);
         for (uint32_t i = 0; i < 16; ++i)
             keys.push_back(0x20000000u | i);
-        check_tree(sanitize(keys));
+        check_tree_all_moduli(keys);
     }
 
     SECTION("lopsided split")
@@ -382,13 +479,13 @@ TEST_CASE("radix tree", "[radix]")
         for (uint32_t i = 0; i < 31; ++i)
             keys.push_back(i);
         keys.push_back(0x3FFFFFFFu);
-        check_tree(sanitize(keys));
+        check_tree_all_moduli(keys);
     }
 
     SECTION("deep prefix chains")
     {
-        // Keys sharing all but the last few bits, so prefix lengths crowd up against 32 and
-        // most increments are 1. The increment is the value most likely to be wrong at the
+        // Keys sharing all but the last few bits, so prefix lengths crowd up against 32 and most
+        // increments are 0 or 1. The increment is the value most likely to be wrong at the
         // extremes.
         for (uint32_t base = 0; base < 8; ++base)
         {
@@ -396,7 +493,7 @@ TEST_CASE("radix tree", "[radix]")
             const uint32_t center = base * 0x04000000u;
             for (uint32_t i = 0; i < 24; ++i)
                 keys.push_back(center | i);
-            check_tree(sanitize(keys));
+            check_tree_all_moduli(keys);
         }
     }
 
@@ -410,20 +507,17 @@ TEST_CASE("radix tree", "[radix]")
             std::uniform_int_distribution<size_t> size_dist(2, 64);
 
             Keys keys(size_dist(rng));
-            for (uint32_t& key : keys)
+            for (Bits& key : keys)
                 key = key_dist(rng);
 
-            keys = sanitize(keys);
-            if (keys.size() < 2)
-                continue;
-            check_tree(keys);
+            check_tree_all_moduli(keys);
         }
     }
 
     SECTION("random clustered keys")
     {
-        // keys drawn from a few tight clusters, imitating the morton codes of a galaxy:
-        // long shared prefixes, so deep chains of internal nodes with single leaf children
+        // keys drawn from a few tight clusters, imitating the morton codes of a galaxy: long
+        // shared prefixes, so deep chains of internal nodes with single leaf children
         for (uint32_t seed = 0; seed < 200; ++seed)
         {
             std::mt19937 rng(seed);
@@ -440,31 +534,31 @@ TEST_CASE("radix tree", "[radix]")
                     keys.push_back((center + spread_dist(rng)) & ((1u << 30) - 1));
             }
 
-            keys = sanitize(keys);
-            if (keys.size() < 2)
-                continue;
-            check_tree(keys);
+            check_tree_all_moduli(keys);
         }
     }
 
     SECTION("partial node range")
     {
-        // radix_tree() is documented as buildable over a section of the node array; a prefix
-        // of the nodes must come out the same as the whole tree built at once.
+        // radix_tree() is documented as buildable over a section of the node array; a prefix of
+        // the nodes must come out the same as the whole tree built at once.
         //
         // Sweeping every prefix length is also what covers a vectorized implementation's
         // remainder handling, since each length leaves a different number of nodes over after
         // the last full batch of lanes.
+        using MortonT = Morton<uint32_t, 3>;
+
         std::mt19937 rng(1234);
         std::uniform_int_distribution<uint32_t> key_dist(0, (1u << 30) - 1);
 
         Keys keys(64);
-        for (uint32_t& key : keys)
+        for (Bits& key : keys)
             key = key_dist(rng);
-        keys = sanitize(keys);
+        keys = sanitize<MortonT>(keys);
 
-        const Tree expected = reference_tree(keys);
-        for (const Builder& builder : builders)
+        const vector<MortonT> morton = morton_keys<MortonT>(keys);
+        const Tree expected = reference_tree(morton);
+        for (const Builder<MortonT>& builder : builders<MortonT>)
         {
             if (builder.supports_partial_build)
             {
@@ -472,7 +566,7 @@ TEST_CASE("radix tree", "[radix]")
                 for (size_t count = 1; count < keys.size(); ++count)
                 {
                     INFO("first " << count << " nodes");
-                    check_nodes(actual_tree(builder, keys, count), expected, count);
+                    check_nodes(actual_tree(builder, morton, count), expected, count);
                 }
             }
         }

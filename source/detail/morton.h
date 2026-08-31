@@ -109,39 +109,79 @@ namespace nbody::detail
             return true;
         }());
 
-        template <typename BitsT, size_t modulus, typename... ArgTs>
-        BitsT _interleave_bits(ArgTs... args);
+        // The largest value one axis can carry in `axis_bits` bits. Guarded because a shift by
+        // the full width of the word is undefined.
+        template <typename BitsT, size_t axis_bits>
+        constexpr BitsT axis_max = (axis_bits >= sizeof(BitsT) * CHAR_BIT)
+            ? static_cast<BitsT>(~BitsT{ 0 })
+            : static_cast<BitsT>((BitsT{ 1 } << axis_bits) - 1);
 
-        template <typename BitsT, size_t modulus, typename ArgT0, typename ArgT1, typename... ArgTs>
-        BitsT _interleave_bits(ArgT0 arg0, ArgT1 arg1, ArgTs... args)
+        // Scale one normalized value into `axis_bits` bits, then spread those bits `modulus`
+        // apart so the other axes can be laid between them.
+        template <typename BitsT, size_t modulus, size_t axis_bits, typename ArgT>
+        constexpr BitsT _interleave_axis(const ArgT arg)
         {
-            BitsT bits0 = _interleave_bits<BitsT, modulus>(arg0);
-            BitsT bits1 = _interleave_bits<BitsT, modulus>(arg1, args...);
-            return (bits0 << 1) | bits1;
+            const BitsT scaled = static_cast<BitsT>(arg * static_cast<ArgT>(axis_max<BitsT, axis_bits>));
+            return expand_bits<BitsT, BitsT, modulus>(scaled);
         }
 
-        template <typename BitsT, typename ArgT0>
-        BitsT _interleave_bits(size_t modulus, ArgT0 arg0)
+        // Lay one spread axis per bit of each level group, first argument highest.
+        //
+        // The base case is a branch rather than a second overload: an overload would have to be
+        // declared before this one to be found at all (the arguments are fundamental types, so
+        // there is no ADL to bring it in later), and the pack version matches a single argument
+        // just as well, which leaves the recursion no floor.
+        template <typename BitsT, size_t modulus, size_t axis_bits, typename ArgT0, typename... ArgTs>
+        constexpr BitsT _interleave_bits(const ArgT0 arg0, const ArgTs... args)
         {
-            return expand_bits<BitsT>(modulus, arg0);
+            const BitsT bits0 = _interleave_axis<BitsT, modulus, axis_bits>(arg0);
+            if constexpr (sizeof...(args) == 0)
+                return bits0;
+            else
+                return static_cast<BitsT>(bits0 << sizeof...(args))
+                    | _interleave_bits<BitsT, modulus, axis_bits, ArgTs...>(args...);
         }
 
-        template <typename BitsT,  typename... ArgTs>
-        BitsT interleave_bits(ArgTs... args)
+        // The entry point, and the only place the axis count is known to be complete: the
+        // recursive step above sees a pack that shrinks, so the check cannot live there.
+        template <typename BitsT, size_t modulus, size_t axis_bits, typename... ArgTs>
+        constexpr BitsT interleave_bits(const ArgTs... args)
         {
-            return _interleave_bits<BitsT, sizeof...(ArgTs)>(args...);
+            static_assert(sizeof...(ArgTs) == modulus, "one value per axis");
+            return _interleave_bits<BitsT, modulus, axis_bits, ArgTs...>(args...);
         }
     }
 
     // Generic Morton code container type
-    template <typename BitsT = uint32_t, size_t modulus_t = 3>
+    template <typename BitsT = uint32_t, size_t modulus_t = 3,
+              size_t bits_count_t = expand_bits_capacity<BitsT, modulus_t> * modulus_t>
     requires std::unsigned_integral<BitsT>
     class Morton
     {
     public:
         using Bits = BitsT;
+
+        // bits per level, which is also the number of axes: one bit from each axis per level
         static constexpr size_t modulus = modulus_t;
-        static constexpr size_t padding = (sizeof(BitsT) * CHAR_BIT) % modulus;
+
+        // How many bits of the word the code actually uses. Defaults to every bit the word can
+        // hold once spread `modulus` apart -- 30 of 32 for an octree, all 32 for a quadtree --
+        // which is what a code built from positions always fills. Override it for a shallower
+        // world, as a hand written test case does.
+        static constexpr size_t bits_count = bits_count_t;
+        static constexpr size_t width = sizeof(BitsT) * CHAR_BIT;
+        static constexpr size_t levels = bits_count / modulus;
+
+        // What separates a code from its word. Every code is left-aligned by this, so bit
+        // `width - 1` is the first bit of level 1 and a common prefix length divided by
+        // `modulus` is a level -- with no correction term, and nothing for the radix tree to
+        // know about the key space beyond `modulus`.
+        static constexpr size_t padding = width - bits_count;
+
+        static_assert(bits_count % modulus == 0, "a code is a whole number of levels");
+        static_assert(bits_count <= width, "code is wider than the word holding it");
+        static_assert(levels <= expand_bits_capacity<BitsT, modulus_t>,
+            "the word cannot spread that many bits this far apart");
 
         Morton() : _bits(0) { }
 
@@ -153,7 +193,7 @@ namespace nbody::detail
         // shifting by "padding" to left-align.
         template<typename... ArgTs>
         requires(sizeof...(ArgTs) == modulus_t)
-        Morton(ArgTs... args) : _bits(interleave_bits<BitsT>(args...) << padding)
+        Morton(ArgTs... args) : _bits(interleave_bits<BitsT, modulus, levels>(args...) << padding)
         {
             // ensure that the values we're setting the code to are normalized
             ( assert(args >= static_cast<ArgTs>(0)), ... );
