@@ -207,3 +207,351 @@ TEST_CASE("create 3-element quadtree sharing a level 1 quadrant (flat octree)", 
 	REQUIRE(octree_nodes[4] == OctreeNode{ .parent = 3, .next = 5, .child = 1, .is_leaf = 1 });
 	REQUIRE(octree_nodes[5] == OctreeNode{ .parent = 3, .next = 0, .child = 2, .is_leaf = 1 });
 }
+
+TEST_CASE("create 2-element quadtree at the deepest level (flat octree)", "[octree]")
+{
+	/*
+
+	The smallest input the construction accepts, and at the same time the deepest chain this
+	morton type can produce: two adjacent points, so they share every level but the last.
+
+	| **7** |       |       |       |       |       |       |       |       |
+	| ----- | ----- | ----- | ----- | ----- | ----- | ----- | ----- | ----- |
+	| **6** |       |       |       |       |       |       |       |       |
+	| **5** |       |       |       |       |       |       |       |       |
+	| **4** |       |       |       |       |       |       |       |       |
+	| **3** |       |       |       |       |       |       |       |       |
+	| **2** |       |       |       |       |       |       |       |       |
+	| **1** | (B)   |       |       |       |       |       |       |       |
+	| **0** | (A)   |       |       |       |       |       |       |       |
+	|       | **0** | **1** | **2** | **3** | **4** | **5** | **6** | **7** |
+
+		A (0,0) -> (000, 000) -> 00 00 00
+		B (0,1) -> (000, 001) -> 00 00 01
+
+	Two keys leave exactly one radix node, which resolves levels 1 and 2 and then splits into
+	two leafs at level 3:
+
+		radix 0: children (A, B)   internals = 2, leafs = 2, range end = 1
+
+	It is the only case here whose chain runs more than one node deep, so it is the only one
+	that exercises a chain node's parent being the previous slot and its child being the next
+	one. Nothing else in the file distinguishes those from the looked-up forms.
+
+	           ~0.        level 0
+	            |
+	           ~1.        level 1
+	            |
+	           ~2.        level 2
+	           /  \
+	         (A)  (B)     level 3
+
+	*/
+
+	using MortonT = detail::Morton<uint32_t, 2, 6>;
+	const vector<MortonT> keys{
+		0b000000, // A
+		0b000001  // B
+	};
+
+	vector<OctreeNode> octree_nodes = scalar::build_octree<MortonT>(keys);
+	REQUIRE(octree_nodes.size() == 5);
+
+	REQUIRE(octree_nodes[0] == OctreeNode{ .parent = 0, .next = 0, .child = 1, .is_leaf = 0 });
+	REQUIRE(octree_nodes[1] == OctreeNode{ .parent = 0, .next = 0, .child = 2, .is_leaf = 0 });
+	REQUIRE(octree_nodes[2] == OctreeNode{ .parent = 1, .next = 0, .child = 3, .is_leaf = 0 });
+	REQUIRE(octree_nodes[3] == OctreeNode{ .parent = 2, .next = 4, .child = 0, .is_leaf = 1 });
+	REQUIRE(octree_nodes[4] == OctreeNode{ .parent = 2, .next = 0, .child = 1, .is_leaf = 1 });
+}
+
+TEST_CASE("create 3-element quadtree whose nodes are not in traversal order (flat octree)", "[octree]")
+{
+	/*
+
+	Three points in one level 2 cell, arranged so that the radix node holding them has an
+	internal child *and* a leaf child -- the one shape whose block cannot be laid out in
+	traversal order.
+
+	| **7** |       |       |       |       |       |       |       |       |
+	| ----- | ----- | ----- | ----- | ----- | ----- | ----- | ----- | ----- |
+	| **6** |       |       |       |       |       |       |       |       |
+	| **5** |       |       |       |       |       |       |       |       |
+	| **4** |       |       |       |       |       |       |       |       |
+	| **3** |       |       |       |       |       |       |       |       |
+	| **2** |       |       |       |       |       |       |       |       |
+	| **1** | (B)   |       |       |       |       |       |       |       |
+	| **0** | (A)   | (C)   |       |       |       |       |       |       |
+	|       | **0** | **1** | **2** | **3** | **4** | **5** | **6** | **7** |
+
+		A (0,0) -> (000, 000) -> 00 00 00
+		B (0,1) -> (000, 001) -> 00 00 01
+		C (1,0) -> (001, 000) -> 00 00 10
+
+	All three share levels 1 and 2 and separate at level 3, so the tree is a two node chain
+	above a single node with three leaf children, in quadrant order A (00), B (01), C (10).
+
+		radix 0: children (radix 1, C)   internals = 2, leafs = 1, range end = 2
+		radix 1: children (A, B)         internals = 0, leafs = 2, range end = 1
+
+	Radix 0's own leaf is C, and its block is [internal, internal, C] = oct[1..3]. But C is the
+	*last* of the three children in quadrant order, and A and B live in radix 1's block at
+	oct[4..5], after it. So the array cannot be in traversal order here no matter how the blocks
+	are placed: a radix node's leafs always follow its internals, while its internal child's
+	subtree is a separate block.
+
+	That makes this the case that pins the pointers down as pointers. The sibling chain runs
+	oct 4 -> oct 5 -> oct 3, backwards through the array, and node 2's child is 4 rather than
+	the slot next to it.
+
+	              ~0.               level 0
+	               |
+	              ~1.               level 1
+	               |
+	              ~2.               level 2
+	             /  |  \
+	          (A) (B) (C)           level 3, held at oct 4, oct 5 and oct 3
+
+	*/
+
+	using MortonT = detail::Morton<uint32_t, 2, 6>;
+	const vector<MortonT> keys{
+		0b000000, // A
+		0b000001, // B
+		0b000010  // C
+	};
+
+	vector<OctreeNode> octree_nodes = scalar::build_octree<MortonT>(keys);
+	REQUIRE(octree_nodes.size() == 6);
+
+	REQUIRE(octree_nodes[0] == OctreeNode{ .parent = 0, .next = 0, .child = 1, .is_leaf = 0 });
+	REQUIRE(octree_nodes[1] == OctreeNode{ .parent = 0, .next = 0, .child = 2, .is_leaf = 0 });
+
+	// child is 4, in radix 1's block, not the adjacent slot
+	REQUIRE(octree_nodes[2] == OctreeNode{ .parent = 1, .next = 0, .child = 4, .is_leaf = 0 });
+
+	// C, reached last in the sibling chain despite sitting first in the array
+	REQUIRE(octree_nodes[3] == OctreeNode{ .parent = 2, .next = 0, .child = 2, .is_leaf = 1 });
+
+	REQUIRE(octree_nodes[4] == OctreeNode{ .parent = 2, .next = 5, .child = 0, .is_leaf = 1 });
+	REQUIRE(octree_nodes[5] == OctreeNode{ .parent = 2, .next = 3, .child = 1, .is_leaf = 1 });
+}
+
+TEST_CASE("create 4-element quadtree with a childless block tail (flat octree)", "[octree]")
+{
+	/*
+
+	Two pairs of points in adjacent level 2 cells, which gives a radix node that resolves a
+	level and owns no leaf at all -- both of its children are internal.
+
+	| **7** |       |       |       |       |       |       |       |       |
+	| ----- | ----- | ----- | ----- | ----- | ----- | ----- | ----- | ----- |
+	| **6** |       |       |       |       |       |       |       |       |
+	| **5** |       |       |       |       |       |       |       |       |
+	| **4** |       |       |       |       |       |       |       |       |
+	| **3** |       |       |       |       |       |       |       |       |
+	| **2** | (C)   | (D)   |       |       |       |       |       |       |
+	| **1** |       |       |       |       |       |       |       |       |
+	| **0** | (A)   | (B)   |       |       |       |       |       |       |
+	|       | **0** | **1** | **2** | **3** | **4** | **5** | **6** | **7** |
+
+		A (0,0) -> (000, 000) -> 00 00 00
+		B (1,0) -> (001, 000) -> 00 00 10
+		C (0,2) -> (000, 010) -> 00 01 00
+		D (1,2) -> (001, 010) -> 00 01 10
+
+	All four share level 1, then split into level 2 cells 00 (A, B) and 01 (C, D):
+
+		radix 0: children (radix 1, radix 2)   internals = 1, leafs = 0, range end = 3
+		radix 1: children (A, B)               internals = 1, leafs = 2, range end = 1
+		radix 2: children (C, D)               internals = 1, leafs = 2, range end = 3
+
+	Radix 0's block is one node long and holds no leaf, so the node ending it has to reach
+	outside its own block for a child. That is what separates `child` from `next` here: node 1's
+	child is 2, the head of radix 1's block, while its escape is 0 -- nothing follows it. A block
+	ends where its subtree ends only for a radix node with no internal children, and this node
+	has two.
+
+	              ~0.                 level 0
+	               |
+	              ~1.                 level 1, holds no leaf of its own
+	             /   \
+	          ~2.     ~5.             level 2, cells 00 and 01
+	         /  \     /  \
+	      (A) (B)   (C) (D)           level 3
+
+	*/
+
+	using MortonT = detail::Morton<uint32_t, 2, 6>;
+	const vector<MortonT> keys{
+		0b000000, // A
+		0b000010, // B
+		0b000100, // C
+		0b000110  // D
+	};
+
+	vector<OctreeNode> octree_nodes = scalar::build_octree<MortonT>(keys);
+	REQUIRE(octree_nodes.size() == 8);
+
+	REQUIRE(octree_nodes[0] == OctreeNode{ .parent = 0, .next = 0, .child = 1, .is_leaf = 0 });
+
+	// child reaches into the next block; next is 0. Deriving both from the block's end would
+	// make them the same number.
+	REQUIRE(octree_nodes[1] == OctreeNode{ .parent = 0, .next = 0, .child = 2, .is_leaf = 0 });
+
+	REQUIRE(octree_nodes[2] == OctreeNode{ .parent = 1, .next = 5, .child = 3, .is_leaf = 0 });
+	REQUIRE(octree_nodes[3] == OctreeNode{ .parent = 2, .next = 4, .child = 0, .is_leaf = 1 });
+	REQUIRE(octree_nodes[4] == OctreeNode{ .parent = 2, .next = 5, .child = 1, .is_leaf = 1 });
+	REQUIRE(octree_nodes[5] == OctreeNode{ .parent = 1, .next = 0, .child = 6, .is_leaf = 0 });
+	REQUIRE(octree_nodes[6] == OctreeNode{ .parent = 5, .next = 7, .child = 2, .is_leaf = 1 });
+	REQUIRE(octree_nodes[7] == OctreeNode{ .parent = 5, .next = 0, .child = 3, .is_leaf = 1 });
+}
+
+TEST_CASE("create 5-element quadtree whose last radix node produces nothing (flat octree)", "[octree]")
+{
+	/*
+
+	A radix node can resolve no level of its own and own no leaf, in which case it produces no
+	octree node and its block is empty. When that node is the *last* one, 1 + its offset is one
+	past the end of the array, so a write placed at the head of a block lands outside it.
+
+	Five points is the smallest input that puts such a node last: no 3 or 4 key set over this
+	grid does it. The construction no longer writes anything for such a node, so no assertion
+	here can catch that write coming back -- what this case is really for is the tree it
+	produces, which no other case in this file has: a root with three children whose array
+	order runs backwards.
+
+	| **7** |       |       |       |       |       |       |       |       |
+	| ----- | ----- | ----- | ----- | ----- | ----- | ----- | ----- | ----- |
+	| **6** |       |       |       |       |       |       |       |       |
+	| **5** | (D)   |       |       |       |       |       |       |       |
+	| **4** | (C)   |       |       |       |       |       |       |       |
+	| **3** |       |       |       |       |       |       |       |       |
+	| **2** |       |       |       |       |       |       |       |       |
+	| **1** |       | (B)   |       |       |       |       |       |       |
+	| **0** | (A)   |       |       |       | (E)   |       |       |       |
+	|       | **0** | **1** | **2** | **3** | **4** | **5** | **6** | **7** |
+
+		A (0,0) -> (000, 000) -> 00 00 00
+		B (1,1) -> (001, 001) -> 00 00 11
+		C (0,4) -> (000, 100) -> 01 00 00
+		D (1,5) -> (001, 101) -> 01 00 11
+		E (4,0) -> (100, 000) -> 10 00 00
+
+	Level 1 puts A and B in cell 00, C and D in cell 01, and E alone in cell 10, so the root has
+	three children. Each pair then shares level 2 and separates at level 3.
+
+		radix 0: children (radix 3, E)         internals = 0, leafs = 1, range end = 4
+		radix 1: children (A, B)               internals = 2, leafs = 2, range end = 1
+		radix 2: children (C, D)               internals = 2, leafs = 2, range end = 3
+		radix 3: children (radix 1, radix 2)   internals = 0, leafs = 0, range end = 3
+
+	Radix 3 is last and produces nothing. Its offset is 9 and the array holds 10 nodes, so its
+	block would begin at oct 10 -- one past the end.
+
+	The case is worth keeping for what it asserts as well: E's leaf sits at oct 1, ahead of the
+	subtrees of every key that sorts before it, so the root's children run oct 2 -> oct 6 ->
+	oct 1 in quadrant order.
+
+	                    ~0.                     level 0
+	                  /  |  \
+	              ~2.   ~6.  (E)                 level 1, cells 00, 01 and 10
+	               |     |
+	              ~3.   ~7.                      level 2
+	             /  \   /  \
+	          (A) (B) (C) (D)                    level 3
+
+	*/
+
+	using MortonT = detail::Morton<uint32_t, 2, 6>;
+	const vector<MortonT> keys{
+		0b000000, // A
+		0b000011, // B
+		0b010000, // C
+		0b010011, // D
+		0b100000  // E
+	};
+
+	vector<OctreeNode> octree_nodes = scalar::build_octree<MortonT>(keys);
+	REQUIRE(octree_nodes.size() == 10);
+
+	// the root's first child is oct 2, not oct 1: radix 0 resolves no level, so the first node
+	// of the range is found by descending past radix 3, which resolves none either
+	REQUIRE(octree_nodes[0] == OctreeNode{ .parent = 0, .next = 0, .child = 2, .is_leaf = 0 });
+
+	// E, the root's last child, held ahead of both subtrees
+	REQUIRE(octree_nodes[1] == OctreeNode{ .parent = 0, .next = 0, .child = 4, .is_leaf = 1 });
+
+	REQUIRE(octree_nodes[2] == OctreeNode{ .parent = 0, .next = 6, .child = 3, .is_leaf = 0 });
+	REQUIRE(octree_nodes[3] == OctreeNode{ .parent = 2, .next = 6, .child = 4, .is_leaf = 0 });
+	REQUIRE(octree_nodes[4] == OctreeNode{ .parent = 3, .next = 5, .child = 0, .is_leaf = 1 });
+	REQUIRE(octree_nodes[5] == OctreeNode{ .parent = 3, .next = 6, .child = 1, .is_leaf = 1 });
+	REQUIRE(octree_nodes[6] == OctreeNode{ .parent = 0, .next = 1, .child = 7, .is_leaf = 0 });
+	REQUIRE(octree_nodes[7] == OctreeNode{ .parent = 6, .next = 1, .child = 8, .is_leaf = 0 });
+	REQUIRE(octree_nodes[8] == OctreeNode{ .parent = 7, .next = 9, .child = 2, .is_leaf = 1 });
+	REQUIRE(octree_nodes[9] == OctreeNode{ .parent = 7, .next = 1, .child = 3, .is_leaf = 1 });
+}
+
+TEST_CASE("create 8-element octree, one body per octant (flat octree)", "[octree]")
+{
+	/*
+
+	The first case here at a modulus of three, and the only one that is an octree rather than a
+	quadtree. Modulus is what converts a common prefix length into a level, and it also bounds
+	how far the construction has to skip past radix nodes that resolve no level, so a file of
+	quadtrees leaves both untested at the width the solver actually runs at.
+
+	One level, one body in each of the eight octants. A code is `x y z`, one bit per axis, x
+	highest:
+
+		octant | code | position
+		-------|------|----------
+		   0   | 000  | (0,0,0)
+		   1   | 001  | (0,0,1)
+		   2   | 010  | (0,1,0)
+		   3   | 011  | (0,1,1)
+		   4   | 100  | (1,0,0)
+		   5   | 101  | (1,0,1)
+		   6   | 110  | (1,1,0)
+		   7   | 111  | (1,1,1)
+
+	Every pair of keys differs inside level 1, so no radix node resolves a level of its own and
+	the octree is one node deep: a root with eight leaf children.
+
+		radix 0: children (radix 3, radix 4)   internals = 0, leafs = 0
+		radix 1: children (0, 1)               internals = 0, leafs = 2
+		radix 2: children (2, 3)               internals = 0, leafs = 2
+		radix 3: children (radix 1, radix 2)   internals = 0, leafs = 0
+		radix 4: children (radix 5, radix 6)   internals = 0, leafs = 0
+		radix 5: children (4, 5)               internals = 0, leafs = 2
+		radix 6: children (6, 7)               internals = 0, leafs = 2
+
+	Three of the seven radix nodes produce nothing, and they are the ones that force the skips
+	to run two deep in both directions -- the bound being modulus - 1, which is 1 for a quadtree
+	and so never reaches two anywhere else in this file:
+
+		the root descends past radix 3 and then radix 1 to find its first child at oct 1
+		leaf 0 walks up past radix 3 and then radix 0 to find the root
+
+	The eight leaves also make the longest sibling chain here, one escape pointer per octant.
+
+	*/
+
+	using MortonT = detail::Morton<uint32_t, 3, 3>;
+	const vector<MortonT> keys{
+		0b000, 0b001, 0b010, 0b011,
+		0b100, 0b101, 0b110, 0b111
+	};
+
+	vector<OctreeNode> octree_nodes = scalar::build_octree<MortonT>(keys);
+	REQUIRE(octree_nodes.size() == 9);
+
+	REQUIRE(octree_nodes[0] == OctreeNode{ .parent = 0, .next = 0, .child = 1, .is_leaf = 0 });
+	REQUIRE(octree_nodes[1] == OctreeNode{ .parent = 0, .next = 2, .child = 0, .is_leaf = 1 });
+	REQUIRE(octree_nodes[2] == OctreeNode{ .parent = 0, .next = 3, .child = 1, .is_leaf = 1 });
+	REQUIRE(octree_nodes[3] == OctreeNode{ .parent = 0, .next = 4, .child = 2, .is_leaf = 1 });
+	REQUIRE(octree_nodes[4] == OctreeNode{ .parent = 0, .next = 5, .child = 3, .is_leaf = 1 });
+	REQUIRE(octree_nodes[5] == OctreeNode{ .parent = 0, .next = 6, .child = 4, .is_leaf = 1 });
+	REQUIRE(octree_nodes[6] == OctreeNode{ .parent = 0, .next = 7, .child = 5, .is_leaf = 1 });
+	REQUIRE(octree_nodes[7] == OctreeNode{ .parent = 0, .next = 8, .child = 6, .is_leaf = 1 });
+	REQUIRE(octree_nodes[8] == OctreeNode{ .parent = 0, .next = 0, .child = 7, .is_leaf = 1 });
+}

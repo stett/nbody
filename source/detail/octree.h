@@ -195,10 +195,14 @@ namespace nbody::detail
             {
                 const NodeCount node_count = node_counts[i_radix];
 
-                // A radix node that resolved no level and has no leaf children produces nothing,
-                // and has no slot of its own to write to: its block is empty, so 1 + offset is
-                // the *next* node's block -- or one past the array when it is the last radix
-                // node, which is a write past the end.
+                // A radix node that resolved no level and owns no leaf produces nothing. Its
+                // block is empty, so 1 + node_offsets[i_radix] names the *next* node's block --
+                // or, when it is the last radix node, one past the array.
+                //
+                // An early out rather than the thing that keeps the index in bounds: nothing
+                // below writes at i_node_0 unconditionally any more, so removing this changes
+                // no output. Worth stating regardless, because a write placed at the head of a
+                // block is exactly what used to reach past the end.
                 if (node_count.internals + node_count.leafs == 0)
                     continue;
 
