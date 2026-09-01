@@ -44,7 +44,9 @@ namespace
         {
             std::array<VariantInfo, variant_count> t{};
             t[size_t(Variant::CpuBarnesHut)] = {
-                Variant::CpuBarnesHut, "CPU Barnes-Hut", "O(n log n) approximation, multithreaded", true, {} };
+                Variant::CpuBarnesHut, "CPU Barnes-Hut", "O(n log n) approximation, serial construction", true, {} };
+            t[size_t(Variant::CpuMortonBarnesHut)] = {
+                Variant::CpuMortonBarnesHut, "CPU Barnes-Hut (Morton)", "O(n log n) approximation, parallel construction", true, {} };
             t[size_t(Variant::CpuBruteForce)] = {
                 Variant::CpuBruteForce, "CPU brute force", "O(n^2) exact summation; the reference", true, {} };
             t[size_t(Variant::GpuBarnesHut)] = {
@@ -66,6 +68,7 @@ namespace
         {
             std::array<Factory, variant_count> t{};
             t[size_t(Variant::CpuBarnesHut)] = &make<nbody::CpuBarnesHutSolver>;
+            t[size_t(Variant::CpuMortonBarnesHut)] = &make<nbody::CpuMortonBarnesHutSolver>;
             t[size_t(Variant::CpuBruteForce)] = &make<nbody::CpuBruteForceSolver>;
             t[size_t(Variant::GpuBarnesHut)] = &make_gpu<nbody::GpuSolver, nbody::Mode::NLogN>;
             t[size_t(Variant::GpuBruteForce)] = &make_gpu<nbody::GpuSolver, nbody::Mode::N2>;

@@ -389,8 +389,8 @@ namespace nbody::detail
 
             // count the number of octree nodes, and allocate.
             const int32_t num_octree_nodes = 1 + offsets.back() + node_count_totals.back();
-            octree_nodes = vector<OctreeNode>(num_octree_nodes);
-            octree_bounds = vector<OctreeBoundsT>(num_octree_nodes);
+            octree_nodes.resize(num_octree_nodes);
+            octree_bounds.resize(num_octree_nodes);
 
             // map each key to the octree node holding it. depends on the offsets, so it cannot
             // be folded into the radix pass above.
