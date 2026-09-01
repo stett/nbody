@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/catch_approx.hpp>
 #include <vector>
 #include <algorithm>
 #include <numeric>
@@ -670,4 +671,116 @@ TEST_CASE("create 8-element octree, one body per octant (flat octree)", "[octree
 	REQUIRE(octree_bounds[6] == OctreeBoundsT{ .center = { 0.75f, 0.25f, 0.75f }, .half_extent = 0.25f });
 	REQUIRE(octree_bounds[7] == OctreeBoundsT{ .center = { 0.75f, 0.75f, 0.25f }, .half_extent = 0.25f });
 	REQUIRE(octree_bounds[8] == OctreeBoundsT{ .center = { 0.75f, 0.75f, 0.75f }, .half_extent = 0.25f });
+}
+
+TEST_CASE("build_octree_masses propagates leaf masses to their parents", "[octree]")
+{
+	// Reuses the "3-element quadtree" fixture from the top of this file, whose node layout
+	// is already pinned down by that test:
+	//   node 0: root, parent of 1 and 2
+	//   node 1: leaf, key 0 -- a direct child of the root
+	//   node 2: internal, parent of 3 and 4
+	//   node 3: leaf, key 1
+	//   node 4: leaf, key 2
+	// so leaf_nodes = [1, 3, 4]: every leaf's octree index is *larger* than its key index.
+	// That is exactly what a leaf-mass pass indexing positions/masses by the octree node
+	// index rather than by the key gets wrong -- key 1 and key 2 would read past the end of
+	// a 3-element positions/masses array.
+	using MortonT = detail::Morton<uint32_t, 2, 4>;
+	const vector<MortonT> keys{
+		0b0110,
+		0b1001,
+		0b1011,
+	};
+
+	OctreeCache cache;
+	vector<OctreeNode> octree_nodes;
+	vector<OctreeBounds<MortonT::modulus>> octree_bounds;
+	scalar::build_octree<MortonT>(keys, cache, octree_nodes, octree_bounds);
+	REQUIRE(octree_nodes.size() == 5);
+	REQUIRE(cache.leaf_nodes == vector<int32_t>{ 1, 3, 4 });
+
+	// one body per key, in key order, with masses and positions chosen so each is
+	// trivially distinguishable from the others
+	const vector<Vector> positions{
+		Vector(1, 0, 0),
+		Vector(0, 1, 0),
+		Vector(0, 0, 1),
+	};
+	const vector<float> masses{ 1.f, 2.f, 4.f };
+
+	vector<OctreeNodeMass> node_masses(octree_nodes.size());
+	scalar::build_octree_masses(octree_nodes, cache.leaf_nodes, positions, masses, node_masses);
+
+	// every leaf holds its own body's mass and position, unchanged
+	REQUIRE(node_masses[1].mass == masses[0]);
+	REQUIRE(node_masses[1].center == positions[0]);
+	REQUIRE(node_masses[3].mass == masses[1]);
+	REQUIRE(node_masses[3].center == positions[1]);
+	REQUIRE(node_masses[4].mass == masses[2]);
+	REQUIRE(node_masses[4].center == positions[2]);
+
+	// node 2 aggregates leaves 3 and 4, i.e. bodies 1 and 2
+	const float expect_2_mass = masses[1] + masses[2];
+	const Vector expect_2_center = ((masses[1] * positions[1]) + (masses[2] * positions[2])) / expect_2_mass;
+	REQUIRE(node_masses[2].mass == Catch::Approx(expect_2_mass));
+	REQUIRE(node_masses[2].center.x == Catch::Approx(expect_2_center.x));
+	REQUIRE(node_masses[2].center.y == Catch::Approx(expect_2_center.y));
+	REQUIRE(node_masses[2].center.z == Catch::Approx(expect_2_center.z));
+
+	// the root aggregates all three bodies
+	const float expect_total_mass = masses[0] + masses[1] + masses[2];
+	REQUIRE(node_masses[0].mass == Catch::Approx(expect_total_mass));
+}
+
+TEST_CASE("build_octree_masses aggregates many siblings under one root", "[octree]")
+{
+	// Reuses the "eight octants, one level" fixture above: node k+1 is the leaf for key k,
+	// and all eight leaves hang directly off the root. This checks the root's accumulation
+	// over many siblings at once, rather than through the two-level chain of the test above.
+	using MortonT = detail::Morton<uint32_t, 3, 3>;
+	const vector<MortonT> keys{
+		0b000, 0b001, 0b010, 0b011,
+		0b100, 0b101, 0b110, 0b111
+	};
+
+	OctreeCache cache;
+	vector<OctreeNode> octree_nodes;
+	vector<OctreeBounds<MortonT::modulus>> octree_bounds;
+	scalar::build_octree<MortonT>(keys, cache, octree_nodes, octree_bounds);
+	REQUIRE(octree_nodes.size() == 9);
+	for (int32_t key = 0; key < static_cast<int32_t>(keys.size()); ++key)
+		REQUIRE(cache.leaf_nodes[key] == key + 1);
+
+	const vector<Vector> positions{
+		Vector(0, 0, 0), Vector(0, 0, 1), Vector(0, 1, 0), Vector(0, 1, 1),
+		Vector(1, 0, 0), Vector(1, 0, 1), Vector(1, 1, 0), Vector(1, 1, 1),
+	};
+	const vector<float> masses{ 1.f, 2.f, 3.f, 4.f, 5.f, 6.f, 7.f, 8.f };
+
+	vector<OctreeNodeMass> node_masses(octree_nodes.size());
+	scalar::build_octree_masses(octree_nodes, cache.leaf_nodes, positions, masses, node_masses);
+
+	// every leaf holds its own body's mass and position, unchanged
+	for (int32_t key = 0; key < static_cast<int32_t>(keys.size()); ++key)
+	{
+		const OctreeNodeMass& leaf = node_masses[cache.leaf_nodes[key]];
+		REQUIRE(leaf.mass == masses[key]);
+		REQUIRE(leaf.center == positions[key]);
+	}
+
+	// the root aggregates every body: total mass, and the mass-weighted centroid
+	float expect_mass = 0.f;
+	Vector expect_center{ 0, 0, 0 };
+	for (size_t i = 0; i < masses.size(); ++i)
+	{
+		expect_center += masses[i] * positions[i];
+		expect_mass += masses[i];
+	}
+	expect_center = expect_center / expect_mass;
+
+	REQUIRE(node_masses[0].mass == Catch::Approx(expect_mass));
+	REQUIRE(node_masses[0].center.x == Catch::Approx(expect_center.x));
+	REQUIRE(node_masses[0].center.y == Catch::Approx(expect_center.y));
+	REQUIRE(node_masses[0].center.z == Catch::Approx(expect_center.z));
 }

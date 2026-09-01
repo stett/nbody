@@ -452,6 +452,14 @@ namespace nbody::detail
             scalar::build_octree<MortonT>(keys, cache.radix_nodes, cache.radix_parents, cache.node_counts, cache.node_range_ends, cache.node_count_totals, cache.offsets, cache.leaf_nodes, octree_nodes, octree_bounds);
         }
 
+        // Convenience overload for callers with no cache of their own to reuse across calls.
+        template <typename MortonT>
+        void build_octree(span<const MortonT> keys, vector<OctreeNode>& octree_nodes, vector<OctreeBounds<MortonT::modulus>>& octree_bounds)
+        {
+            OctreeCache cache;
+            build_octree(keys, cache, octree_nodes, octree_bounds);
+        }
+
         void build_octree_masses(span<const OctreeNode> nodes, span<const int32_t> leaf_nodes, span<const Vector> positions, span<const float> masses, span<OctreeNodeMass> node_masses, int32_t i_offset = 0, int32_t i_count = -1);
     }
 
