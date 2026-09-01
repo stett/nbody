@@ -171,6 +171,13 @@ namespace nbody::detail
             static_assert(sizeof...(ArgTs) == modulus, "one value per axis");
             return _interleave_bits<BitsT, modulus, axis_bits, ArgTs...>(args...);
         }
+
+        template <typename ArgT>
+        constexpr void assert_normalized([[maybe_unused]] const ArgT arg)
+        {
+            assert(arg >= static_cast<ArgT>(0));
+            assert(arg <= static_cast<ArgT>(1));
+        }
     }
 
     // Generic Morton code container type
@@ -217,8 +224,7 @@ namespace nbody::detail
         Morton(ArgTs... args) : _bits(interleave_bits<BitsT, modulus, levels>(args...) << padding)
         {
             // ensure that the values we're setting the code to are normalized
-            ( assert(args >= static_cast<ArgTs>(0)), ... );
-            ( assert(args <= static_cast<ArgTs>(1)), ... );
+            ( assert_normalized(args), ... );
         }
 
         [[nodiscard]] const Bits& bits() const { return _bits; }
