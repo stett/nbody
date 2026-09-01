@@ -184,8 +184,8 @@ namespace nbody::detail
                 // that the range starting at m spans two or more keys rather than being the
                 // lone key m.
                 node_range_ends[node_index] = max(i, j);
-                if (child0 <= 0) node_parents[-child0 - node_offset] = i;
-                if (child1 <= 0) node_parents[-child1 - node_offset] = i;
+                if (child0 <= 0) node_parents[-child0] = i;
+                if (child1 <= 0) node_parents[-child1] = i;
             }
         }
     }

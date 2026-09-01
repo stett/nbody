@@ -1,7 +1,9 @@
 #pragma once
+#include <algorithm>
 #include <cstddef>
 #include <span>
 #include <vector>
+#include <execution>
 #include "solvers/cpu_solver.h"
 #include "nbody/debug.h"
 #include "nbody/profile.h"
@@ -39,39 +41,75 @@ namespace nbody
         {
             NBODY_PROFILE_ZONE();
 
-            // TODO: morton-encode the bodies, sort, and build into _nodes / _bounds with
-            // detail::scalar::build_octree, then run a centre-of-mass pass and traverse.
-            // Until then the bodies are left unaccelerated rather than half-accelerated.
-            _keys.clear();
-            _nodes.clear();
-            _bounds.clear();
-
             {
-                NBODY_PROFILE_ZONE_NAMED("Allocate Morton codes");
-                _keys.resize(_state->bodies.size());
-            }
+                NBODY_PROFILE_ZONE_NAMED("build acceleration structure");
 
-            {
-                NBODY_PROFILE_ZONE_NAMED("Compute Morton codes");
-                const float size_inv = 1. / _state->size;
-                std::ranges::transform(_state->bodies, _keys.begin(), [size_inv](const Body& b) -> Morton
+                // TODO: morton-encode the bodies, sort, and build into _nodes / _bounds with
+                // detail::scalar::build_octree, then run a centre-of-mass pass and traverse.
+                // Until then the bodies are left unaccelerated rather than half-accelerated.
+                _keys.clear();
+                _nodes.clear();
+                _bounds.clear();
+                _node_masses.clear();
+
                 {
-                    return {
-                        std::clamp((b.pos.x * size_inv) + .5, 0., 1.),
-                        std::clamp((b.pos.y * size_inv) + .5, 0., 1.),
-                        std::clamp((b.pos.z * size_inv) + .5, 0., 1.),
-                    };
-                });
+                    NBODY_PROFILE_ZONE_NAMED("allocate morton codes");
+                    _keys.resize(_state->bodies.size());
+                }
+
+                {
+                    NBODY_PROFILE_ZONE_NAMED("compute morton codes");
+                    const float size_inv = 1.f / _state->size;
+
+                    detail::parallel_blocks(*_context->pool, _state->bodies.size(), [this, size_inv](const std::ptrdiff_t begin, const std::ptrdiff_t end)
+                    {
+                        NBODY_PROFILE_ZONE_NAMED("compute morton codes subset");
+                        std::transform(_state->bodies.begin() + begin, _state->bodies.begin() + end, _keys.begin() + begin, [size_inv](const Body& b) -> Morton
+                        {
+                            return {
+                                std::clamp((b.pos.x * size_inv) + .5, 0., 1.),
+                                std::clamp((b.pos.y * size_inv) + .5, 0., 1.),
+                                std::clamp((b.pos.z * size_inv) + .5, 0., 1.),
+                            };
+                        });
+                    });
+                }
+
+                {
+                    NBODY_PROFILE_ZONE_NAMED("sort morton codes");
+                    detail::parallel_sort<Morton>(*_context->pool, _keys);
+                }
+
+                {
+                    NBODY_PROFILE_ZONE_NAMED("build octree");
+                    detail::parallel::build_octree<Morton>(*_context->pool, _keys, _cache, _nodes, _bounds);
+                }
+
+                {
+                    NBODY_PROFILE_ZONE_NAMED("build masses");
+
+                    {
+                        NBODY_PROFILE_ZONE_NAMED("split masses and positions");
+                        // TODO: Do this only on transfer
+                        _body_positions.resize(_state->bodies.size());
+                        _body_masses.resize(_state->bodies.size());
+                        detail::parallel_for(*_context->pool, _state->bodies.size(), [this](const size_t i)
+                        {
+                            _body_positions[i] = _state->bodies[i].pos;
+                            _body_masses[i] = _state->bodies[i].mass;
+                        });
+                    }
+
+                    {
+                        NBODY_PROFILE_ZONE_NAMED("propagate leaf node masses");
+                        _node_masses.resize(_nodes.size());
+                        detail::scalar::build_octree_masses(_nodes, _cache.leaf_nodes, _body_positions, _body_masses, _node_masses);
+                    }
+                }
             }
 
             {
-                NBODY_PROFILE_ZONE_NAMED("Sort Morton codes");
-                std::sort(_keys.begin(), _keys.end());
-            }
-
-            {
-                NBODY_PROFILE_ZONE_NAMED("Build octree");
-                detail::scalar::build_octree<Morton>(_keys, _nodes, _bounds);
+                NBODY_PROFILE_ZONE_NAMED("compute accelerations");
             }
         }
 
@@ -84,12 +122,29 @@ namespace nbody
             const float size = _state->size;
             const size_t count = std::min<size_t>(out.size(), _bounds.size());
 
+            /*
             std::transform(_bounds.begin(), _bounds.begin() + count, out.begin(), [size](const detail::OctreeBounds<3>& b) -> DebugNode {
                 const std::array<float, 3>& c = b.center;
                 return {
                     .center = { .x = (c[0] - .5f) * size, .y = (c[1] - .5f) * size, .z = (c[2] - .5f) * size, },
                     .size = 2.f * b.half_extent * size,
                     .weight = 0.f,
+                };
+            });
+            */
+
+            const float total_mass = _node_masses[0].mass;
+            const float total_mass_inv = 1.f / total_mass;
+            detail::parallel_for(*_context->pool, count, [&](const size_t i)
+            {
+                const detail::OctreeBounds<3>& bounds = _bounds[i];
+                const detail::OctreeNodeMass& mass = _node_masses[i];
+                const std::array<float, 3>& center = bounds.center;
+                out[i] = {
+                    // TODO: SIMD
+                    .center = { .x = (center[0] - .5f) * size, .y = (center[1] - .5f) * size, .z = (center[2] - .5f) * size, },
+                    .size = 2.f * bounds.half_extent * size,
+                    .weight = mass.mass * total_mass_inv,
                 };
             });
 
@@ -99,7 +154,12 @@ namespace nbody
     private:
 
         std::vector<Morton> _keys;
+        detail::OctreeCache _cache;
         std::vector<detail::OctreeNode> _nodes;
         std::vector<detail::OctreeBounds<3>> _bounds;
+        std::vector<detail::OctreeNodeMass> _node_masses;
+        std::vector<Vector> _body_positions;
+        //std::vector<Vector> _body_velocities;
+        std::vector<float> _body_masses;
     };
 }

@@ -33,79 +33,64 @@ namespace nbody::detail
             //return 1 + node_offsets.back();
         }
 
-        /*
-        // compute the nodes of an octree into pre-allocated list of nodes
-        void octree(const span<const RadixNode> radix_nodes, const span<const int32_t> radix_node_parents, const span<const int32_t> radix_node_cpl_deltas, const span<const int32_t> node_offsets, const span<OctreeNode> octree_nodes)
+        void build_octree_masses(
+            const span<const OctreeNode> nodes,
+            const span<const int32_t> leaf_nodes,
+            const span<const Vector> positions,
+            const span<const float> masses,
+            const span<OctreeNodeMass> node_masses,
+            const int32_t i_offset, int32_t i_count)
         {
-            //
-            // TODO: compute octree nodes
-            //
+            NBODY_PROFILE_ZONE();
 
-            for (size_t i_radix = 0; i_radix < radix_nodes.size(); ++i_radix)
+            assert(nodes.size() == node_masses.size());
+            assert(leaf_nodes.size() == positions.size());
+            assert(leaf_nodes.size() == masses.size());
+
+            // clear the masses and centers of mass
+            std::ranges::fill(node_masses, OctreeNodeMass{ .center = Vector(0,0,0), .mass = 0 });
+
+            // clamp the iteration count to the range
+            i_count = (i_count < 0) ? static_cast<int32_t>(leaf_nodes.size() - i_offset) : i_count;
+            for (int32_t i_leaf_local = 0; i_leaf_local < i_count; ++i_leaf_local)
             {
-                const int32_t count = radix_node_cpl_deltas[i_radix];
+                const int32_t i_leaf = i_leaf_local + i_offset;
 
-                // if the edge doesn't cross a boundary, there's nothing to write
-                if (count == 0)
+                // the mass/center of a leaf node is just the raw input data
+                int32_t i_octree = leaf_nodes[i_leaf];
+                node_masses[i_octree] = { .center = positions[i_octree], .mass = masses[i_octree] };
+
+                // if there was one node and it's the root, stop
+                if (i_octree == 0)
                     continue;
 
-                // get the index for the first node in the range of octree nodes corresponding to this radix node
-                const size_t octree_index_0 = node_offsets[i_radix];
-                const size_t octree_index_N = node_offsets[i_radix];
-
-                // for the first node in the range
-                OctreeNode& node0 = octree_nodes[octree_index_0];
-
-                // walk up the radix tree until we find the radix node that produced this octree node
-                int32_t radix_parent = radix_node_parents[i_radix];
-                while (radix_parent >= 0 && radix_node_cpl_deltas[radix_parent] == 0)
-                    radix_parent = radix_node_parents[radix_parent];
-                node0.parent = node_offsets[radix_parent];
-
-                //
-                //node0.next = node_offsets[radix_parent + 1];
-
-                // loop over the target octree nodes, which are contiguous in the octree_nodes array
-                for (size_t octree_index = octree_index_0 + 1; octree_index < octree_index_0 + count; ++octree_index)
+                // climb up the tree
+                do
                 {
-                    OctreeNode& node = octree_nodes[octree_index];
+                    // store the child, get the parent
+                    const int32_t i_parent = nodes[i_octree].parent;
 
-                    // the index of the parent node.
-                    node.parent = octree_index - 1;
+                    // get references to the child and parent masses
+                    const OctreeNodeMass& child_mass = node_masses[i_octree];
+                    OctreeNodeMass& parent_mass = node_masses[i_parent];
 
-                    // the "next" index is the next octree node at the same level as this one.
-                    // if this is the last node at this level, then it is the _parent's_ next index.
-                    //node.next = ???;
+                    // add to the total mass, and shift the center
+                    const float new_mass = parent_mass.mass + child_mass.mass;
+                    const float new_mass_inv = 1.f / new_mass;
+                    // TODO: SIMD
+                    const float new_center_x = ((parent_mass.mass * parent_mass.center.x) + (child_mass.mass * child_mass.center.x)) * new_mass_inv;
+                    const float new_center_y = ((parent_mass.mass * parent_mass.center.y) + (child_mass.mass * child_mass.center.y)) * new_mass_inv;
+                    const float new_center_z = ((parent_mass.mass * parent_mass.center.z) + (child_mass.mass * child_mass.center.z)) * new_mass_inv;
+                    parent_mass = OctreeNodeMass{
+                        .center = Vector(new_center_x, new_center_y, new_center_z),
+                        .mass = new_mass,
+                    };
 
-                    // the index of the first child of this node.
-                    //node.children = 
-                }
+                    // the parent becomes the new child for the next iteration
+                    i_octree = i_parent;
+
+                } while (i_octree);
             }
         }
-
-        // compute the nodes of an octree, allocating intermediate data
-        template<typename OctreeNodesT = vector<OctreeNode>>
-        void octree(const span<const Vector> points, OctreeNodesT& octree_nodes)
-        {
-            // compute and sort morton codes
-            vector<Morton<>> keys(points.size());
-            to_morton(points, keys);
-            sort(keys.begin(), keys.end());
-
-            // build the radix tree
-            vector<RadixNode> radix_nodes(keys.size() - 1);
-            vector<int32_t> radix_node_parents(radix_nodes.size());
-            vector<int32_t> radix_node_cpl_deltas(radix_nodes.size());
-            parallel::radix_tree<Morton<>>(keys, radix_nodes, radix_node_parents, radix_node_cpl_deltas);
-
-            // get octree node offests for each radix tree node
-            vector<int32_t> node_offests(radix_nodes.size());
-            const int32_t octree_node_count = octree_node_offsets(radix_node_cpl_deltas, node_offests);
-
-            // build the octree from the radix tree
-            octree_nodes.resize(octree_node_count);
-            octree(radix_nodes, node_offests, octree_nodes);
-        }
-    */
     }
 }
