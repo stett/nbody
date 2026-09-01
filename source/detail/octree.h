@@ -1,5 +1,6 @@
 #pragma once
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <span>
@@ -18,12 +19,14 @@ namespace nbody::detail
     using std::span;
     using std::vector;
     using std::exclusive_scan;
+    using std::mutex;
 
     struct OctreeNode
     {
         int32_t parent = 0;
         int32_t next = 0;
         int32_t child = 0;
+        //int32_t child_count = 0;
 
         // TODO: pack this value into the sign bit for child
         bool is_leaf = false;
@@ -288,6 +291,7 @@ namespace nbody::detail
                 .child = (node_counts[0].internals > 0)
                     ? 1 + node_offsets[0]
                     : find_octree_child(radix_nodes[0].child0_index),
+                //.child_count = (node_counts[0].internals > 0 ? 1 : 0) + node_counts[0].leafs,
                 .is_leaf = false,
             };
 
@@ -352,6 +356,9 @@ namespace nbody::detail
                         .child = (i_internal + 1 < node_count.internals)
                             ? i_node + 1
                             : find_octree_child(radix_nodes[i_radix].child0_index),
+
+                        // count the number of immediate children that this node has
+                        //.child_count = (node_count.internals > 0 ? 1 : 0) + node_count.leafs,
 
                         // TODO: pack this value into the child node's sign bit
                         .is_leaf = false,
@@ -460,7 +467,7 @@ namespace nbody::detail
             build_octree(keys, cache, octree_nodes, octree_bounds);
         }
 
-        void build_octree_masses(span<const OctreeNode> nodes, span<const int32_t> leaf_nodes, span<const Vector> positions, span<const float> masses, span<OctreeNodeMass> node_masses, int32_t i_offset = 0, int32_t i_count = -1);
+        void build_octree_masses(span<const OctreeNode> nodes, span<const int32_t> leaf_nodes, span<const Vector> positions, span<const float> masses, span<OctreeNodeMass> node_masses, span<std::atomic<uint8_t>> node_counters, int32_t i_offset = 0, int32_t i_count = -1);
     }
 
     namespace parallel
@@ -550,5 +557,7 @@ namespace nbody::detail
             OctreeCache cache;
             build_octree(keys, cache, octree_nodes, octree_bounds);
         }
+
+        void build_octree_masses(BS::thread_pool& pool, span<const OctreeNode> nodes, span<mutex> node_mutexes, span<const int32_t> leaf_nodes, span<const Vector> positions, span<const float> masses, span<OctreeNodeMass> node_masses);
     }
 }

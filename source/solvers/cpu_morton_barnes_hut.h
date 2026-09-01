@@ -17,10 +17,6 @@ namespace nbody
     // makes, over a flat octree built from morton codes rather than by inserting bodies one
     // at a time. Construction is the part of a barnes-hut frame that does not parallelize
     // today (see detail/tree.h), and a morton build is what fixes that.
-    //
-    // NOT YET WIRED INTO Variant, and accelerate() below builds nothing: this is a hole of
-    // the right shape, not a working solver. sim.cpp includes it anyway so the compiler
-    // keeps it honest against the Solver interface while the tree work lands.
     class CpuMortonBarnesHutSolver final : public CpuSolver
     {
     public:
@@ -103,7 +99,9 @@ namespace nbody
                     {
                         NBODY_PROFILE_ZONE_NAMED("propagate leaf node masses");
                         _node_masses.resize(_nodes.size());
-                        detail::scalar::build_octree_masses(_nodes, _cache.leaf_nodes, _body_positions, _body_masses, _node_masses);
+                        if (_node_counters.size() != _nodes.size())
+                            _node_counters = std::vector<std::atomic<uint8_t>>(_nodes.size());
+                        detail::scalar::build_octree_masses(_nodes, _cache.leaf_nodes, _body_positions, _body_masses, _node_masses, _node_counters);
                     }
                 }
             }
@@ -122,17 +120,6 @@ namespace nbody
             const float size = _state->size;
             const size_t count = std::min<size_t>(out.size(), _bounds.size());
 
-            /*
-            std::transform(_bounds.begin(), _bounds.begin() + count, out.begin(), [size](const detail::OctreeBounds<3>& b) -> DebugNode {
-                const std::array<float, 3>& c = b.center;
-                return {
-                    .center = { .x = (c[0] - .5f) * size, .y = (c[1] - .5f) * size, .z = (c[2] - .5f) * size, },
-                    .size = 2.f * b.half_extent * size,
-                    .weight = 0.f,
-                };
-            });
-            */
-
             const float total_mass = _node_masses[0].mass;
             const float total_mass_inv = 1.f / total_mass;
             detail::parallel_for(*_context->pool, count, [&](const size_t i)
@@ -142,9 +129,9 @@ namespace nbody
                 const std::array<float, 3>& center = bounds.center;
                 out[i] = {
                     // TODO: SIMD
-                    .center = { .x = (center[0] - .5f) * size, .y = (center[1] - .5f) * size, .z = (center[2] - .5f) * size, },
+                    .center = { .x = (center[0] - .5f) * size, .y = (center[1] - .5f) * size, .z = (center[2] - .5f) * size },
                     .size = 2.f * bounds.half_extent * size,
-                    .weight = mass.mass * total_mass_inv,
+                    .weight = 1.f - (mass.mass * total_mass_inv),
                 };
             });
 
@@ -158,8 +145,8 @@ namespace nbody
         std::vector<detail::OctreeNode> _nodes;
         std::vector<detail::OctreeBounds<3>> _bounds;
         std::vector<detail::OctreeNodeMass> _node_masses;
+        std::vector<std::atomic<uint8_t>> _node_counters;
         std::vector<Vector> _body_positions;
-        //std::vector<Vector> _body_velocities;
         std::vector<float> _body_masses;
     };
 }

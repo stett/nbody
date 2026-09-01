@@ -3,6 +3,7 @@
 #include <vector>
 #include <algorithm>
 #include <numeric>
+#include <atomic>
 #include "nbody/vector.h"
 #include "detail/radix.h"
 #include "detail/octree.h"
@@ -710,7 +711,8 @@ TEST_CASE("build_octree_masses propagates leaf masses to their parents", "[octre
 	const vector<float> masses{ 1.f, 2.f, 4.f };
 
 	vector<OctreeNodeMass> node_masses(octree_nodes.size());
-	scalar::build_octree_masses(octree_nodes, cache.leaf_nodes, positions, masses, node_masses);
+	vector<std::atomic<uint8_t>> node_counters(octree_nodes.size());
+	scalar::build_octree_masses(octree_nodes, cache.leaf_nodes, positions, masses, node_masses, node_counters);
 
 	// every leaf holds its own body's mass and position, unchanged
 	REQUIRE(node_masses[1].mass == masses[0]);
@@ -759,7 +761,8 @@ TEST_CASE("build_octree_masses aggregates many siblings under one root", "[octre
 	const vector<float> masses{ 1.f, 2.f, 3.f, 4.f, 5.f, 6.f, 7.f, 8.f };
 
 	vector<OctreeNodeMass> node_masses(octree_nodes.size());
-	scalar::build_octree_masses(octree_nodes, cache.leaf_nodes, positions, masses, node_masses);
+	vector<std::atomic<uint8_t>> node_counters(octree_nodes.size());
+	scalar::build_octree_masses(octree_nodes, cache.leaf_nodes, positions, masses, node_masses, node_counters);
 
 	// every leaf holds its own body's mass and position, unchanged
 	for (int32_t key = 0; key < static_cast<int32_t>(keys.size()); ++key)
