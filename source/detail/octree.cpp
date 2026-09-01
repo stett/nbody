@@ -22,6 +22,8 @@ namespace nbody::detail
     {
         int32_t octree_node_offsets(const span<const int32_t> node_cpl_deltas, const span<int32_t> node_offsets)
         {
+            NBODY_PROFILE_ZONE();
+
             assert(node_cpl_deltas.size() == node_offsets.size());
             exclusive_scan(node_cpl_deltas.begin(), node_cpl_deltas.end(), node_offsets.begin(), 0);
             //inclusive_scan(node_cpl_deltas.begin(), node_cpl_deltas.end(), node_offsets.begin());
@@ -112,6 +114,34 @@ namespace nbody::detail
 
                 } while (i_octree);
             }
+        }
+    }
+
+    namespace parallel
+    {
+        void build_octree_masses(
+            BS::thread_pool& pool,
+            const span<const OctreeNode> nodes,
+            const span<const int32_t> leaf_nodes,
+            const span<const Vector> positions,
+            const span<const float> masses,
+            const span<OctreeNodeMass> node_masses,
+            const span<std::atomic<uint8_t>> node_counters)
+        {
+            NBODY_PROFILE_ZONE();
+
+            detail::parallel_blocks(pool, leaf_nodes.size(), [&](const std::ptrdiff_t begin, const std::ptrdiff_t end)
+            {
+                scalar::build_octree_masses(
+                    nodes,
+                    leaf_nodes,
+                    positions,
+                    masses,
+                    node_masses,
+                    node_counters,
+                    begin,
+                    end - begin);
+            });
         }
     }
 }

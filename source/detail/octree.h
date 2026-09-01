@@ -584,18 +584,13 @@ namespace nbody::detail
         }
 
         // Build an octree from a set of points, populating a span of nodes in a flat array.
-        //
-        // The entire span of points being read from must be provided, but the span of nodes being
-        // written to can be a subset of the total, so that the octree can be built in parallel. In
-        // this case, the node_offset parameter must be set to the index of the first node in theh
-        // span being written to.
         template <typename MortonT>
         void build_octree(BS::thread_pool& pool, span<const MortonT> keys, vector<OctreeNode>& octree_nodes, vector<OctreeBounds<MortonT::modulus>>& octree_bounds)
         {
             OctreeCache cache;
-            build_octree(keys, cache, octree_nodes, octree_bounds);
+            build_octree(pool, keys, cache, octree_nodes, octree_bounds);
         }
 
-        void build_octree_masses(BS::thread_pool& pool, span<const OctreeNode> nodes, span<mutex> node_mutexes, span<const int32_t> leaf_nodes, span<const Vector> positions, span<const float> masses, span<OctreeNodeMass> node_masses);
+        void build_octree_masses(BS::thread_pool& pool, span<const OctreeNode> nodes, span<const int32_t> leaf_nodes, span<const Vector> positions, span<const float> masses, span<OctreeNodeMass> node_masses, span<std::atomic<uint8_t>> node_counters);
     }
 }

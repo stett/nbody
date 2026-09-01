@@ -101,7 +101,7 @@ namespace nbody
                         _node_masses.resize(_nodes.size());
                         if (_node_counters.size() != _nodes.size())
                             _node_counters = std::vector<std::atomic<uint8_t>>(_nodes.size());
-                        detail::scalar::build_octree_masses(_nodes, _cache.leaf_nodes, _body_positions, _body_masses, _node_masses, _node_counters);
+                        detail::parallel::build_octree_masses(*_context->pool, _nodes, _cache.leaf_nodes, _body_positions, _body_masses, _node_masses, _node_counters);
                     }
                 }
             }
