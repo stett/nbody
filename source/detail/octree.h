@@ -65,6 +65,38 @@ namespace nbody::detail
         vector<int32_t> leaf_nodes;
     };
 
+    // A radix tree needs at least one split to exist, so build_octree's usual path requires
+    // at least two keys -- with fewer, cache.offsets and cache.node_count_totals end up empty
+    // and calling .back() on them below is undefined behavior. Handle 0 and 1 keys directly
+    // instead of letting them fall into that path. Returns true if it handled the input.
+    template <typename MortonT>
+    bool try_build_degenerate_octree(const span<const MortonT> keys, OctreeCache& cache, vector<OctreeNode>& octree_nodes, vector<OctreeBounds<MortonT::modulus>>& octree_bounds)
+    {
+        using OctreeBoundsT = OctreeBounds<MortonT::modulus>;
+
+        if (keys.size() == 0)
+        {
+            octree_nodes.clear();
+            octree_bounds.clear();
+            cache.leaf_nodes.clear();
+            return true;
+        }
+
+        if (keys.size() == 1)
+        {
+            // the one key is both the root and its own leaf, covering the whole domain
+            OctreeBoundsT bounds{ .center = {}, .half_extent = 0.5f };
+            std::fill(bounds.center.begin(), bounds.center.end(), 0.5f);
+
+            octree_nodes.assign(1, OctreeNode{ .parent = 0, .next = 0, .child = 0, .is_leaf = true });
+            octree_bounds.assign(1, bounds);
+            cache.leaf_nodes.assign(1, 0);
+            return true;
+        }
+
+        return false;
+    }
+
     namespace scalar
     {
         // do a prefix sum to compute the offset into the octree node array
@@ -418,6 +450,9 @@ namespace nbody::detail
             NBODY_PROFILE_ZONE_NAMED("build_octree");
             using OctreeBoundsT = OctreeBounds<MortonT::modulus>;
 
+            if (try_build_degenerate_octree<MortonT>(keys, cache, octree_nodes, octree_bounds))
+                return;
+
             // build the radix tree
             {
                 NBODY_PROFILE_ZONE_NAMED("build radix tree");
@@ -477,6 +512,9 @@ namespace nbody::detail
         {
             NBODY_PROFILE_ZONE_NAMED("build_octree");
             using OctreeBoundsT = OctreeBounds<MortonT::modulus>;
+
+            if (try_build_degenerate_octree<MortonT>(keys, cache, octree_nodes, octree_bounds))
+                return;
 
             // build the radix tree
             {
