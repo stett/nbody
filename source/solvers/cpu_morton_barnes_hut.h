@@ -108,6 +108,29 @@ namespace nbody
 
             {
                 NBODY_PROFILE_ZONE_NAMED("compute accelerations");
+                const float theta = _state->theta;
+                const float G = _state->gravity;
+                //detail::parallel_blocks(*_context->pool, _state->bodies.size(),
+                //    [this, theta, G](const size_t begin, const size_t end)
+                    {
+                        NBODY_PROFILE_ZONE_NAMED("barnes-hut block");
+                //        for (size_t i = begin; i < end; ++i)
+                        for (size_t i = 0; i < _state->bodies.size(); ++i)
+                        {
+                            Body& body = _state->bodies[i];
+                            body.acc = { 0, 0, 0 };
+                            detail::scalar::apply_octree(
+                                _nodes,
+                                _bounds,
+                                _node_masses,
+                                body.pos, [this, &body, G](const int32_t node_index)
+                            {
+                                const detail::OctreeNodeMass& node_mass = _node_masses[node_index];
+                                body.acc += detail::gravity(body.pos, body.radius, node_mass.center, node_mass.mass, G);
+                            }, theta);
+                        }
+                    }
+                //);
             }
         }
 

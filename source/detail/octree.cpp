@@ -115,6 +115,60 @@ namespace nbody::detail
                 } while (i_octree);
             }
         }
+
+        void apply_octree(
+            const span<const OctreeNode> nodes,
+            const span<const OctreeBounds<3>> node_bounds,
+            const span<const OctreeNodeMass> node_masses,
+            const Vector& pos,
+            const std::function<void(int32_t node_index)>& func,
+            const float theta)
+        {
+            NBODY_PROFILE_ZONE();
+
+            const float theta_sq = theta * theta;
+
+            int32_t node_index = 0;
+            do
+            {
+                const OctreeNode& node = nodes[node_index];
+
+                /*
+                // If the node is empty, skip it
+                if (node.mass == 0)
+                {
+                    node_index = node.next;
+                    continue;
+                }
+                */
+
+                // If the node has no children, apply function directly
+                //if (node.child == 0)
+                if (node.is_leaf)
+                {
+                    func(node_index);
+                    node_index = node.next;
+                    continue;
+                }
+
+                // If the node is far enough away apply the node function
+                const OctreeBounds<3>& node_bound = node_bounds[node_index];
+                const OctreeNodeMass& node_mass = node_masses[node_index];
+                const float node_bound_size = node_bound.half_extent * 2;
+                const float node_size_sq = node_bound_size * node_bound_size;
+                const Vector delta = node_mass.center - pos;
+                const float dist_sq = dot(delta, delta);
+                if (dist_sq > node_size_sq * theta_sq)
+                {
+                    func(node_index);
+                    node_index = node.next;
+                    continue;
+                }
+
+                // If we need to drill down, start looking at the node's children
+                node_index = node.child;
+            } while (0 < node_index && node_index < nodes.size());
+        }
     }
 
     namespace parallel

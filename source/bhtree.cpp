@@ -112,8 +112,7 @@ void Tree::apply(const Vector& pos, const std::function<void(const Node& node)>&
             continue;
         }
 
-        // If the node has no children, apply function directly, and increment
-        // node_index by one to indicate 
+        // If the node has no children, apply function directly
         if (node.children == 0)
         {
             func(node);
