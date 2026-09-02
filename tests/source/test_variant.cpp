@@ -1,8 +1,11 @@
+#include <algorithm>
 #include <cmath>
 #include <vector>
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/catch_approx.hpp>
 #include "nbody/sim.h"
 #include "nbody/util.h"
+#include "detail/physics.h"
 
 namespace
 {
@@ -368,4 +371,54 @@ TEST_CASE("every variant steps with no bodies", "[sim][variant]")
         REQUIRE(sim.bodies().size() == 32);
     }
     REQUIRE(tested >= 2);
+}
+
+TEST_CASE("CPU Barnes-Hut (Morton) attaches the right mass/position to each octree leaf", "[sim][variant]")
+{
+    // Regression test for a real bug in CpuMortonBarnesHutSolver::accelerate(): it used to
+    // sort morton codes on their own, with no memory of which body produced which one, and
+    // then index the (still body-ordered) positions/masses by position in the sorted key
+    // array -- attaching whatever body happened to sit at that array index to the octree
+    // leaf that structurally belonged to a completely different body.
+    //
+    // Bodies are inserted in an order distinct from their morton-sorted order: A sits alone
+    // near the origin, B and C form a tight, distant pair, so morton order is [A, B, C], but
+    // insertion order here is [C, A, B] -- a derangement, not a fixed point anywhere, so the
+    // bug (were it still present) could not hide behind a coincidental identity mapping.
+    nbody::Sim sim(nbody::Variant::CpuMortonBarnesHut);
+    REQUIRE(sim.variant() == nbody::Variant::CpuMortonBarnesHut);
+
+    sim.set_size(1000.f);
+    sim.set_gravity(1.f);
+
+    // theta this large forces exhaustive traversal (see the huge-theta comments on the
+    // apply_octree tests in test_octree.cpp) so this test isolates the sort/alignment fix
+    // from apply_octree's own opening-angle approximation, which is a separate concern.
+    sim.set_theta(1.0e6f);
+
+    const nbody::Vector pos_a = { 0.f, 0.f, 0.f };
+    const nbody::Vector pos_b = { 400.f, 0.f, 0.f };
+    const nbody::Vector pos_c = { 400.f, 10.f, 0.f };
+    constexpr float mass_a = 1.f;
+    constexpr float mass_b = 5.f;
+    constexpr float mass_c = 5.f;
+
+    sim.mutable_bodies() = {
+        nbody::Body{ .pos = pos_c, .mass = mass_c },
+        nbody::Body{ .pos = pos_a, .mass = mass_a },
+        nbody::Body{ .pos = pos_b, .mass = mass_b },
+    };
+
+    sim.accelerate();
+
+    const auto it = std::ranges::find_if(sim.bodies(), [](const nbody::Body& b) { return b.mass == mass_a; });
+    REQUIRE(it != sim.bodies().end());
+    const nbody::Vector acc_a = it->acc;
+
+    const nbody::Vector expect_acc_a = nbody::detail::gravity(pos_a, 0.f, pos_b, mass_b, 1.f)
+        + nbody::detail::gravity(pos_a, 0.f, pos_c, mass_c, 1.f);
+
+    REQUIRE(acc_a.x == Catch::Approx(expect_acc_a.x));
+    REQUIRE(acc_a.y == Catch::Approx(expect_acc_a.y));
+    REQUIRE(acc_a.z == Catch::Approx(expect_acc_a.z));
 }

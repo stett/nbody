@@ -40,9 +40,7 @@ namespace nbody
             {
                 NBODY_PROFILE_ZONE_NAMED("build acceleration structure");
 
-                // TODO: morton-encode the bodies, sort, and build into _nodes / _bounds with
-                // detail::scalar::build_octree, then run a centre-of-mass pass and traverse.
-                // Until then the bodies are left unaccelerated rather than half-accelerated.
+                _keyed.clear();
                 _keys.clear();
                 _nodes.clear();
                 _bounds.clear();
@@ -50,7 +48,7 @@ namespace nbody
 
                 {
                     NBODY_PROFILE_ZONE_NAMED("allocate morton codes");
-                    _keys.resize(_state->bodies.size());
+                    _keyed.resize(_state->bodies.size());
                 }
 
                 {
@@ -60,20 +58,38 @@ namespace nbody
                     detail::parallel_blocks(*_context->pool, _state->bodies.size(), [this, size_inv](const std::ptrdiff_t begin, const std::ptrdiff_t end)
                     {
                         NBODY_PROFILE_ZONE_NAMED("compute morton codes subset");
-                        std::transform(_state->bodies.begin() + begin, _state->bodies.begin() + end, _keys.begin() + begin, [size_inv](const Body& b) -> Morton
+                        for (std::ptrdiff_t i = begin; i < end; ++i)
                         {
-                            return {
-                                std::clamp((b.pos.x * size_inv) + .5, 0., 1.),
-                                std::clamp((b.pos.y * size_inv) + .5, 0., 1.),
-                                std::clamp((b.pos.z * size_inv) + .5, 0., 1.),
+                            const Body& b = _state->bodies[i];
+                            _keyed[i] = {
+                                Morton(
+                                    std::clamp((b.pos.x * size_inv) + .5, 0., 1.),
+                                    std::clamp((b.pos.y * size_inv) + .5, 0., 1.),
+                                    std::clamp((b.pos.z * size_inv) + .5, 0., 1.)),
+                                static_cast<int32_t>(i),
                             };
-                        });
+                        }
                     });
                 }
 
                 {
+                    // Sorting the key alongside the body index it came from is what keeps
+                    // the gather below aligned to the right body: sorting a bare
+                    // vector<Morton>, as before, has nowhere to carry that index and
+                    // forgets it, which is the bug this replaces.
                     NBODY_PROFILE_ZONE_NAMED("sort morton codes");
-                    detail::parallel_sort<Morton>(*_context->pool, _keys);
+                    detail::parallel_sort<KeyedMorton>(*_context->pool, _keyed);
+                }
+
+                {
+                    // build_octree wants a plain span<const Morton>; this is a sequential
+                    // copy over data that's already in its final sorted order, not a gather.
+                    NBODY_PROFILE_ZONE_NAMED("extract sorted keys");
+                    _keys.resize(_keyed.size());
+                    detail::parallel_for(*_context->pool, _keyed.size(), [this](const size_t i)
+                    {
+                        _keys[i] = _keyed[i].key;
+                    });
                 }
 
                 {
@@ -85,14 +101,19 @@ namespace nbody
                     NBODY_PROFILE_ZONE_NAMED("build masses");
 
                     {
-                        NBODY_PROFILE_ZONE_NAMED("split masses and positions");
-                        // TODO: Do this only on transfer
-                        _body_positions.resize(_state->bodies.size());
-                        _body_masses.resize(_state->bodies.size());
-                        detail::parallel_for(*_context->pool, _state->bodies.size(), [this](const size_t i)
+                        // Leaf slot i_leaf needs the body that produced the i_leaf-th sorted
+                        // key -- _keyed[i_leaf].body_index -- not body i_leaf itself. This is
+                        // the one random-access pass the fix costs: everywhere else only
+                        // touches the small (key, index) pairs, not the full body data.
+                        NBODY_PROFILE_ZONE_NAMED("gather positions and masses into sorted order");
+                        _body_positions.resize(_keyed.size());
+                        _body_masses.resize(_keyed.size());
+                        detail::parallel_for(*_context->pool, _keyed.size(), [this](const size_t i_leaf)
                         {
-                            _body_positions[i] = _state->bodies[i].pos;
-                            _body_masses[i] = _state->bodies[i].mass;
+                            NBODY_PROFILE_ZONE_NAMED("gather positions block");
+                            const int32_t i_body = _keyed[i_leaf].body_index;
+                            _body_positions[i_leaf] = _state->bodies[i_body].pos;
+                            _body_masses[i_leaf] = _state->bodies[i_body].mass;
                         });
                     }
 
@@ -110,12 +131,12 @@ namespace nbody
                 NBODY_PROFILE_ZONE_NAMED("compute accelerations");
                 const float theta = _state->theta;
                 const float G = _state->gravity;
-                //detail::parallel_blocks(*_context->pool, _state->bodies.size(),
-                //    [this, theta, G](const size_t begin, const size_t end)
+                const float size = _state->size;
+                detail::parallel_blocks(*_context->pool, _state->bodies.size(),
+                    [this, theta, G, size](const size_t begin, const size_t end)
                     {
                         NBODY_PROFILE_ZONE_NAMED("barnes-hut block");
-                //        for (size_t i = begin; i < end; ++i)
-                        for (size_t i = 0; i < _state->bodies.size(); ++i)
+                        for (size_t i = begin; i < end; ++i)
                         {
                             Body& body = _state->bodies[i];
                             body.acc = { 0, 0, 0 };
@@ -127,10 +148,10 @@ namespace nbody
                             {
                                 const detail::OctreeNodeMass& node_mass = _node_masses[node_index];
                                 body.acc += detail::gravity(body.pos, body.radius, node_mass.center, node_mass.mass, G);
-                            }, theta);
+                            }, theta, size);
                         }
                     }
-                //);
+                );
             }
         }
 
@@ -163,6 +184,17 @@ namespace nbody
 
     private:
 
+        // A morton key paired with the index of the body that produced it. Sorting these
+        // together, by key alone (see operator< below), is what keeps that pairing intact
+        // through the sort.
+        struct KeyedMorton
+        {
+            Morton key;
+            int32_t body_index;
+            bool operator<(const KeyedMorton& rhs) const { return key < rhs.key; }
+        };
+
+        std::vector<KeyedMorton> _keyed;
         std::vector<Morton> _keys;
         detail::OctreeCache _cache;
         std::vector<detail::OctreeNode> _nodes;

@@ -35,14 +35,14 @@ namespace nbody::detail
             //return 1 + node_offsets.back();
         }
 
-        void build_octree_masses(
+        void build_octree_masses_chunk(
             const span<const OctreeNode> nodes,
             const span<const int32_t> leaf_nodes,
             const span<const Vector> positions,
             const span<const float> masses,
             const span<OctreeNodeMass> node_masses,
             const span<std::atomic<uint8_t>> node_counters,
-            const int32_t i_offset, int32_t i_count)
+            const int32_t i_offset = 0, int32_t i_count = -1)
         {
             NBODY_PROFILE_ZONE();
 
@@ -50,10 +50,6 @@ namespace nbody::detail
             assert(nodes.size() == node_counters.size());
             assert(leaf_nodes.size() == positions.size());
             assert(leaf_nodes.size() == masses.size());
-
-            // clear the masses, centers of mass, and atomic counters
-            std::ranges::fill(node_masses, OctreeNodeMass{ .center = Vector(0,0,0), .mass = 0 });
-            std::ranges::fill(node_counters, 0);
 
             // clamp the iteration count to the range
             i_count = (i_count < 0) ? static_cast<int32_t>(leaf_nodes.size() - i_offset) : i_count;
@@ -116,34 +112,40 @@ namespace nbody::detail
             }
         }
 
+        void build_octree_masses(
+            const span<const OctreeNode> nodes,
+            const span<const int32_t> leaf_nodes,
+            const span<const Vector> positions,
+            const span<const float> masses,
+            const span<OctreeNodeMass> node_masses,
+            const span<std::atomic<uint8_t>> node_counters)
+        {
+            NBODY_PROFILE_ZONE();
+
+            // clear the masses, centers of mass, and atomic counters
+            std::ranges::fill(node_masses, OctreeNodeMass{ .center = Vector(0,0,0), .mass = 0 });
+            std::ranges::fill(node_counters, 0);
+
+            //
+            build_octree_masses_chunk(nodes, leaf_nodes, positions, masses, node_masses, node_counters);
+        }
+
         void apply_octree(
             const span<const OctreeNode> nodes,
             const span<const OctreeBounds<3>> node_bounds,
             const span<const OctreeNodeMass> node_masses,
             const Vector& pos,
             const std::function<void(int32_t node_index)>& func,
-            const float theta)
+            const float theta,
+            const float size)
         {
-            NBODY_PROFILE_ZONE();
-
             const float theta_sq = theta * theta;
 
             int32_t node_index = 0;
             do
             {
-                const OctreeNode& node = nodes[node_index];
-
-                /*
-                // If the node is empty, skip it
-                if (node.mass == 0)
-                {
-                    node_index = node.next;
-                    continue;
-                }
-                */
-
                 // If the node has no children, apply function directly
-                //if (node.child == 0)
+                const OctreeNode& node = nodes[node_index];
                 if (node.is_leaf)
                 {
                     func(node_index);
@@ -153,9 +155,9 @@ namespace nbody::detail
 
                 // If the node is far enough away apply the node function
                 const OctreeBounds<3>& node_bound = node_bounds[node_index];
-                const OctreeNodeMass& node_mass = node_masses[node_index];
-                const float node_bound_size = node_bound.half_extent * 2;
+                const float node_bound_size = node_bound.half_extent * 2.f * size;
                 const float node_size_sq = node_bound_size * node_bound_size;
+                const OctreeNodeMass& node_mass = node_masses[node_index];
                 const Vector delta = node_mass.center - pos;
                 const float dist_sq = dot(delta, delta);
                 if (dist_sq > node_size_sq * theta_sq)
@@ -184,9 +186,13 @@ namespace nbody::detail
         {
             NBODY_PROFILE_ZONE();
 
+            // clear the arrays of node masses and counters
+            std::ranges::fill(node_masses, OctreeNodeMass{ .center = Vector(0,0,0), .mass = 0 });
+            std::ranges::fill(node_counters, 0);
+
             detail::parallel_blocks(pool, leaf_nodes.size(), [&](const std::ptrdiff_t begin, const std::ptrdiff_t end)
             {
-                scalar::build_octree_masses(
+                scalar::build_octree_masses_chunk(
                     nodes,
                     leaf_nodes,
                     positions,

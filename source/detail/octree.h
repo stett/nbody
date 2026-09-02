@@ -502,9 +502,9 @@ namespace nbody::detail
             build_octree(keys, cache, octree_nodes, octree_bounds);
         }
 
-        void build_octree_masses(span<const OctreeNode> nodes, span<const int32_t> leaf_nodes, span<const Vector> positions, span<const float> masses, span<OctreeNodeMass> node_masses, span<std::atomic<uint8_t>> node_counters, int32_t i_offset = 0, int32_t i_count = -1);
+        void build_octree_masses(span<const OctreeNode> nodes, span<const int32_t> leaf_nodes, span<const Vector> positions, span<const float> masses, span<OctreeNodeMass> node_masses, span<std::atomic<uint8_t>> node_counters);
 
-        void apply_octree(span<const OctreeNode> nodes, span<const OctreeBounds<3>> node_bounds, span<const OctreeNodeMass> node_masses, const Vector& pos, const std::function<void(int32_t node_index)>& func, float theta);
+        void apply_octree(span<const OctreeNode> nodes, span<const OctreeBounds<3>> node_bounds, span<const OctreeNodeMass> node_masses, const Vector& pos, const std::function<void(int32_t node_index)>& func, float theta, float size);
     }
 
     namespace parallel

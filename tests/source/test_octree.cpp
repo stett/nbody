@@ -4,7 +4,9 @@
 #include <algorithm>
 #include <numeric>
 #include <atomic>
+#include "nbody/constants.h"
 #include "nbody/vector.h"
+#include "detail/physics.h"
 #include "detail/radix.h"
 #include "detail/octree.h"
 #include "detail/morton.h"
@@ -17,6 +19,68 @@ namespace
 	using std::exclusive_scan;
 	using namespace nbody;
 	using namespace nbody::detail;
+
+	// Shared fixture for apply_octree tests below: builds nodes/bounds/masses for a small,
+	// explicit set of bodies, using the real production pipeline (morton-encode, sort,
+	// build_octree, build_octree_masses) rather than hand-picked node layouts, so these
+	// tests exercise apply_octree exactly as cpu_morton_barnes_hut.h does.
+	//
+	// Positions and masses are re-sorted together by key here, unlike
+	// cpu_morton_barnes_hut.h, which sorts _keys alone and then indexes its *unsorted*
+	// _body_positions/_body_masses by the sorted position -- a separate, real bug (the
+	// mapping from a sorted key back to the body that produced it is lost the moment the
+	// keys are sorted on their own). Keeping that bug out of this fixture is deliberate:
+	// it isolates apply_octree so a failure here points at apply_octree itself, not at
+	// that upstream mismatch. Worth fixing separately in cpu_morton_barnes_hut.h.
+	using ApplyMorton = Morton<uint64_t, 3>;
+
+	struct AppliedOctree
+	{
+		vector<OctreeNode> nodes;
+		vector<OctreeBounds<3>> bounds;
+		vector<OctreeNodeMass> masses;
+	};
+
+	AppliedOctree build_applied_octree(const vector<Vector>& positions, const vector<float>& masses, const float size)
+	{
+		struct Entry { ApplyMorton key; Vector pos; float mass; };
+
+		const float size_inv = 1.f / size;
+		vector<Entry> entries(positions.size());
+		for (size_t i = 0; i < positions.size(); ++i)
+		{
+			const Vector& p = positions[i];
+			entries[i] = {
+				ApplyMorton(
+					std::clamp((p.x * size_inv) + .5f, 0.f, 1.f),
+					std::clamp((p.y * size_inv) + .5f, 0.f, 1.f),
+					std::clamp((p.z * size_inv) + .5f, 0.f, 1.f)),
+				p,
+				masses[i],
+			};
+		}
+		std::sort(entries.begin(), entries.end(), [](const Entry& a, const Entry& b) { return a.key < b.key; });
+
+		vector<ApplyMorton> keys(entries.size());
+		vector<Vector> sorted_positions(entries.size());
+		vector<float> sorted_masses(entries.size());
+		for (size_t i = 0; i < entries.size(); ++i)
+		{
+			keys[i] = entries[i].key;
+			sorted_positions[i] = entries[i].pos;
+			sorted_masses[i] = entries[i].mass;
+		}
+
+		OctreeCache cache;
+		AppliedOctree result;
+		scalar::build_octree<ApplyMorton>(keys, cache, result.nodes, result.bounds);
+
+		result.masses.resize(result.nodes.size());
+		vector<std::atomic<uint8_t>> counters(result.nodes.size());
+		scalar::build_octree_masses(result.nodes, cache.leaf_nodes, sorted_positions, sorted_masses, result.masses, counters);
+
+		return result;
+	}
 }
 
 TEST_CASE("create 3-element quadtree (flat octree)", "[octree]")
@@ -786,4 +850,106 @@ TEST_CASE("build_octree_masses aggregates many siblings under one root", "[octre
 	REQUIRE(node_masses[0].center.x == Catch::Approx(expect_center.x));
 	REQUIRE(node_masses[0].center.y == Catch::Approx(expect_center.y));
 	REQUIRE(node_masses[0].center.z == Catch::Approx(expect_center.z));
+}
+
+TEST_CASE("apply_octree on one body applies no force", "[octree][apply_octree]")
+{
+	// The smallest input apply_octree accepts: one body, so build_octree hands back the
+	// degenerate single-node tree (root is its own leaf, see try_build_degenerate_octree).
+	// There is nothing else to feel a force from, and the only node apply_octree can visit
+	// is the body's own leaf -- gravity() must report that as zero, not NaN, since the
+	// self-distance is exactly zero and the default radius is also zero.
+	const vector<Vector> positions{ Vector(100, 0, 0) };
+	const vector<float> masses{ 5.f };
+	const AppliedOctree tree = build_applied_octree(positions, masses, 1000.f);
+	REQUIRE(tree.nodes.size() == 1);
+
+	// theta this large forces the loop past every "far enough, approximate" branch it can
+	// take, so it always drills down to individual leaves -- see the huge-theta comment on
+	// the two- and three-body tests below for why that is exhaustive here rather than the
+	// more usual small-theta reading of the opening angle.
+	const float theta = 1.0e6f;
+
+	int32_t call_count = 0;
+	Vector acc{ 0, 0, 0 };
+	scalar::apply_octree(tree.nodes, tree.bounds, tree.masses, positions[0],
+		[&](const int32_t node_index)
+		{
+			++call_count;
+			const OctreeNodeMass& node_mass = tree.masses[node_index];
+			acc += gravity(positions[0], 0.f, node_mass.center, node_mass.mass, G);
+		}, theta, 1000.f);
+
+	REQUIRE(call_count == 1);
+	REQUIRE(acc.x == 0.f);
+	REQUIRE(acc.y == 0.f);
+	REQUIRE(acc.z == 0.f);
+}
+
+TEST_CASE("apply_octree on two bodies matches a direct pairwise force", "[octree][apply_octree]")
+{
+	// Two bodies is the smallest case with an actual force to get right, and the smallest
+	// case with a real sibling to traverse to (the "3-element quadtree" and "eight octants"
+	// fixtures above are what to reach for if a deeper tree turns out to be where this
+	// breaks). With theta this large, apply_octree must drill all the way to both leaves
+	// rather than approximate either one, so the result has to equal gravity() applied
+	// directly between the two bodies -- any mismatch here is apply_octree's traversal
+	// getting the wrong node, the wrong count of nodes, or the wrong mass/center off a node,
+	// not an approximation artifact.
+	const vector<Vector> positions{ Vector(-100, 0, 0), Vector(100, 0, 0) };
+	const vector<float> masses{ 3.f, 7.f };
+	const AppliedOctree tree = build_applied_octree(positions, masses, 1000.f);
+
+	const float theta = 1.0e6f;
+
+	int32_t call_count = 0;
+	Vector acc{ 0, 0, 0 };
+	scalar::apply_octree(tree.nodes, tree.bounds, tree.masses, positions[0],
+		[&](const int32_t node_index)
+		{
+			++call_count;
+			const OctreeNodeMass& node_mass = tree.masses[node_index];
+			acc += gravity(positions[0], 0.f, node_mass.center, node_mass.mass, G);
+		}, theta, 1000.f);
+
+	// one call for the queried body's own (zero-force) leaf, one for the other body
+	REQUIRE(call_count == 2);
+
+	const Vector expect_acc = gravity(positions[0], 0.f, positions[1], masses[1], G);
+	REQUIRE(acc.x == Catch::Approx(expect_acc.x));
+	REQUIRE(acc.y == Catch::Approx(expect_acc.y));
+	REQUIRE(acc.z == Catch::Approx(expect_acc.z));
+}
+
+TEST_CASE("apply_octree on three bodies matches a brute-force sum", "[octree][apply_octree]")
+{
+	// Three non-collinear bodies are the smallest case with a real internal node above more
+	// than one leaf (unlike the two-body case, whose only internal node is the root), so
+	// this is what exercises apply_octree walking a sibling chain more than one hop deep --
+	// see the "next" field's role in the fixtures above if this is where it breaks instead
+	// of the two-body case above.
+	const vector<Vector> positions{ Vector(-100, 0, 0), Vector(100, 0, 0), Vector(0, 100, 0) };
+	const vector<float> masses{ 3.f, 7.f, 5.f };
+	const AppliedOctree tree = build_applied_octree(positions, masses, 1000.f);
+
+	const float theta = 1.0e6f;
+
+	int32_t call_count = 0;
+	Vector acc{ 0, 0, 0 };
+	scalar::apply_octree(tree.nodes, tree.bounds, tree.masses, positions[0],
+		[&](const int32_t node_index)
+		{
+			++call_count;
+			const OctreeNodeMass& node_mass = tree.masses[node_index];
+			acc += gravity(positions[0], 0.f, node_mass.center, node_mass.mass, G);
+		}, theta, 1000.f);
+
+	// one call per leaf: the queried body's own (zero-force) leaf, plus the other two
+	REQUIRE(call_count == 3);
+
+	const Vector expect_acc = gravity(positions[0], 0.f, positions[1], masses[1], G)
+		+ gravity(positions[0], 0.f, positions[2], masses[2], G);
+	REQUIRE(acc.x == Catch::Approx(expect_acc.x));
+	REQUIRE(acc.y == Catch::Approx(expect_acc.y));
+	REQUIRE(acc.z == Catch::Approx(expect_acc.z));
 }
