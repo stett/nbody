@@ -40,8 +40,12 @@ namespace nbody
             // clear all masses preserving existing bounds
             void clear();
 
-            // apply a function to all masses around a point, using the barnes-hut approximation
-            void apply(const Vector& pos, const std::function<void(const Node& node)>& func, const float theta = .5f) const;
+            // Apply a function to all masses around a point, using the barnes-hut
+            // approximation. Templated on the visitor rather than taking a std::function so
+            // the call to func() can be inlined -- see detail::scalar::apply_octree for the
+            // same trade made there, for a fair before/after comparison between the two.
+            template <typename Func>
+            void apply(const Vector& pos, const Func& func, const float theta = .5f) const;
 
             // apply a function to each node which intersects a ray
             void query(const Ray& ray, const std::function<bool(const Node&)>& visitor) const;
@@ -60,5 +64,46 @@ namespace nbody
             // array of all nodes in data structure
             std::vector<Node> _nodes;
         };
+
+        template <typename Func>
+        void Tree::apply(const Vector& pos, const Func& func, const float theta) const
+        {
+            const float theta_sq = theta * theta;
+
+            uint32_t node_index = 0;
+            do
+            {
+                const Node& node = _nodes[node_index];
+
+                // If the node is empty, skip it
+                if (node.mass == 0)
+                {
+                    node_index = node.next;
+                    continue;
+                }
+
+                // If the node has no children, apply function directly
+                if (node.children == 0)
+                {
+                    func(node);
+                    node_index = node.next;
+                    continue;
+                }
+
+                // If the node is far enough away apply the node function
+                const float node_size_sq = node.bounds.size * node.bounds.size;
+                const Vector delta = node.com - pos;
+                const float dist_sq = dot(delta, delta);
+                if (dist_sq > node_size_sq * theta_sq)
+                {
+                    func(node);
+                    node_index = node.next;
+                    continue;
+                }
+
+                // If we need to drill down, start looking at the node's children
+                node_index = node.children;
+            } while (0 < node_index && node_index < _nodes.size());
+        }
     }
 }

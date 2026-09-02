@@ -94,48 +94,6 @@ void Tree::accumulate(const uint32_t node_index, const Vector& position, const f
     _nodes[node_index].com = total_position;
 }
 
-void Tree::apply(const Vector& pos, const std::function<void(const Node& node)>& func, const float theta) const
-{
-    NBODY_PROFILE_ZONE();
-
-    const float theta_sq = theta * theta;
-
-    uint32_t node_index = 0;
-    do
-    {
-        const Node& node = _nodes[node_index];
-
-        // If the node is empty, skip it
-        if (node.mass == 0)
-        {
-            node_index = node.next;
-            continue;
-        }
-
-        // If the node has no children, apply function directly
-        if (node.children == 0)
-        {
-            func(node);
-            node_index = node.next;
-            continue;
-        }
-
-        // If the node is far enough away apply the node function
-        const float node_size_sq = node.bounds.size * node.bounds.size;
-        const Vector delta = node.com - pos;
-        const float dist_sq = dot(delta, delta);
-        if (dist_sq > node_size_sq * theta_sq)
-        {
-            func(node);
-            node_index = node.next;
-            continue;
-        }
-
-        // If we need to drill down, start looking at the node's children
-        node_index = node.children;
-    } while (0 < node_index && node_index < _nodes.size());
-}
-
 void Tree::clear(const Bounds& new_bounds)
 {
     NBODY_PROFILE_ZONE();

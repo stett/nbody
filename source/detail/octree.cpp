@@ -129,48 +129,6 @@ namespace nbody::detail
             //
             build_octree_masses_chunk(nodes, leaf_nodes, positions, masses, node_masses, node_counters);
         }
-
-        void apply_octree(
-            const span<const OctreeNode> nodes,
-            const span<const OctreeBounds<3>> node_bounds,
-            const span<const OctreeNodeMass> node_masses,
-            const Vector& pos,
-            const std::function<void(int32_t node_index)>& func,
-            const float theta,
-            const float size)
-        {
-            const float theta_sq = theta * theta;
-
-            int32_t node_index = 0;
-            do
-            {
-                // If the node has no children, apply function directly
-                const OctreeNode& node = nodes[node_index];
-                if (node.is_leaf)
-                {
-                    func(node_index);
-                    node_index = node.next;
-                    continue;
-                }
-
-                // If the node is far enough away apply the node function
-                const OctreeBounds<3>& node_bound = node_bounds[node_index];
-                const float node_bound_size = node_bound.half_extent * 2.f * size;
-                const float node_size_sq = node_bound_size * node_bound_size;
-                const OctreeNodeMass& node_mass = node_masses[node_index];
-                const Vector delta = node_mass.center - pos;
-                const float dist_sq = dot(delta, delta);
-                if (dist_sq > node_size_sq * theta_sq)
-                {
-                    func(node_index);
-                    node_index = node.next;
-                    continue;
-                }
-
-                // If we need to drill down, start looking at the node's children
-                node_index = node.child;
-            } while (0 < node_index && node_index < nodes.size());
-        }
     }
 
     namespace parallel
