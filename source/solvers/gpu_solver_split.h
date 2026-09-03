@@ -56,6 +56,7 @@ namespace nbody
         void update(const float dt) override
         {
             NBODY_PROFILE_ZONE();
+
             // See accelerate(): an empty body array cannot be bound as a descriptor.
             if (_state->bodies.empty())
                 return;

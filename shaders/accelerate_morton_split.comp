@@ -1,0 +1,25 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+#include "common.glsl"
+#include "body_split.glsl"
+#include "octree.glsl"
+
+layout(std430, binding = 10) buffer OctreeNodes { OctreeNode octree_nodes[]; };
+layout(std430, binding = 11) buffer OctreeBoundsBuffer { OctreeBounds octree_bounds[]; };
+layout(std430, binding = 12) buffer OctreeNodeMasses { OctreeNodeMass octree_masses[]; };
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= uint(pc.num_bodies))
+        return;
+
+    // Placeholder: writes an explicit zero rather than skipping the write. This pass's
+    // output is what integrate_split.comp consumes and what ultimately reaches
+    // Solver::state(), so leaving it unwritten would read garbage out of a fresh
+    // device-local allocation instead of behaving like plain free-flight. Real logic: the
+    // octree traversal in nbody::detail::scalar::apply_octree (source/detail/octree.h),
+    // reading pos_mass[i] as the query position and octree_nodes/octree_bounds/
+    // octree_masses as the tree.
+    accs[i].acc = vec3(0);
+}

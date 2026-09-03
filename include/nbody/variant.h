@@ -6,14 +6,14 @@ namespace nbody
     // Which underlying simulation implementation a Sim is running.
     enum class Variant : int
     {
-        CpuBarnesHut = 0,   // O(n log n) tree approximation, serial tree construction phase, multithreaded query
-        CpuMortonBarnesHut, // O(n log n) tree approximation, multithread construction and query
-        CpuBruteForce,      // O(n^2) exact summation; the correctness reference
-        GpuBarnesHut,       // vulkan compute, tree approximation
-        GpuBruteForce,      // vulkan compute, exact summation
-        GpuBarnesHutSoA,    // vulkan compute, tree approximation, rough SoA memory layout
-        GpuBruteForceSoA,   // vulkan compute, exact summation, rough SoA memory layout
-
+        CpuBruteForce = 0,     // O(n^2) exact summation; the correctness reference
+        CpuBarnesHut,          // O(n log n) tree approximation, serial tree construction phase, multithreaded query
+        CpuBarnesHutMorton,    // O(n log n) tree approximation, multithread construction and query
+        GpuBruteForce,         // full vulkan compute, exact summation
+        GpuBruteForceSoA,      // full vulkan compute, exact summation, rough SoA memory layout
+        GpuBarnesHut,          // cpu tree construction, vulkan compute query, tree approximation
+        GpuBarnesHutSoA,       // cpu tree construction, vulkan compute, tree approximation, rough SoA memory layout
+        GpuBarnesHutMortonSoA, // vulkan compute tree construction
         Count
     };
 

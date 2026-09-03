@@ -1,0 +1,27 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+#include "common.glsl"
+#include "body_split.glsl"
+#include "octree.glsl"
+
+layout(std430, binding = 8) buffer RadixNodes { RadixNode radix_nodes[]; };
+layout(std430, binding = 9) buffer RadixMeta { int radix_meta[]; };
+layout(std430, binding = 10) buffer OctreeNodes { OctreeNode octree_nodes[]; };
+layout(std430, binding = 11) buffer OctreeBoundsBuffer { OctreeBounds octree_bounds[]; };
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= uint(pc.num_bodies))
+        return;
+
+    // Placeholder: zero-fills this node's slot. Real logic: populate octree topology and
+    // bounds from the radix tree (see nbody::detail::scalar::build_octree,
+    // source/detail/octree.h) built by build_radix_tree_split.comp.
+    octree_nodes[i].parent = 0;
+    octree_nodes[i].next = 0;
+    octree_nodes[i].child = 0;
+    octree_nodes[i].is_leaf = 0;
+    octree_bounds[i].center = vec3(0);
+    octree_bounds[i].half_extent = 0;
+}

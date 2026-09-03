@@ -13,6 +13,7 @@
 #include "solvers/cpu_morton_barnes_hut.h"
 #include "solvers/gpu_solver.h"
 #include "solvers/gpu_solver_split.h"
+#include "solvers/gpu_solver_barnes_hut_morton_soa.h"
 
 using nbody::Sim;
 using nbody::Variant;
@@ -43,20 +44,22 @@ namespace
         static std::array<VariantInfo, variant_count> table = []
         {
             std::array<VariantInfo, variant_count> t{};
-            t[size_t(Variant::CpuBarnesHut)] = {
-                Variant::CpuBarnesHut, "CPU Barnes-Hut", "O(n log n) approximation, serial construction", true, {} };
-            t[size_t(Variant::CpuMortonBarnesHut)] = {
-                Variant::CpuMortonBarnesHut, "CPU Barnes-Hut (Morton)", "O(n log n) approximation, parallel construction", true, {} };
             t[size_t(Variant::CpuBruteForce)] = {
                 Variant::CpuBruteForce, "CPU brute force", "O(n^2) exact summation; the reference", true, {} };
-            t[size_t(Variant::GpuBarnesHut)] = {
-                Variant::GpuBarnesHut, "GPU Barnes-Hut", "Vulkan compute, O(n log n) approximation", false, "not probed" };
+            t[size_t(Variant::CpuBarnesHut)] = {
+                Variant::CpuBarnesHut, "CPU Barnes-Hut", "O(n log n) approximation, serial construction", true, {} };
+            t[size_t(Variant::CpuBarnesHutMorton)] = {
+                Variant::CpuBarnesHutMorton, "CPU Barnes-Hut (Morton)", "O(n log n) approximation, parallel construction", true, {} };
             t[size_t(Variant::GpuBruteForce)] = {
                 Variant::GpuBruteForce, "GPU brute force", "Vulkan compute, O(n^2) exact summation", false, "not probed" };
-            t[size_t(Variant::GpuBarnesHutSoA)] = {
-                Variant::GpuBarnesHutSoA, "GPU Barnes-Hut (SoA)", "As above, over split body arrays", false, "not probed" };
             t[size_t(Variant::GpuBruteForceSoA)] = {
                 Variant::GpuBruteForceSoA, "GPU brute force (SoA)", "As above, over split body arrays", false, "not probed" };
+            t[size_t(Variant::GpuBarnesHut)] = {
+                Variant::GpuBarnesHut, "GPU Barnes-Hut", "Vulkan compute, O(n log n) approximation", false, "not probed" };
+            t[size_t(Variant::GpuBarnesHutSoA)] = {
+                Variant::GpuBarnesHutSoA, "GPU Barnes-Hut (SoA)", "As above, over split body arrays", false, "not probed" };
+            t[size_t(Variant::GpuBarnesHutMortonSoA)] = {
+                Variant::GpuBarnesHutMortonSoA, "GPU Barnes-Hut (Morton, SoA)", "As above, with full compute tree construction", false, "not probed" };
             return t;
         }();
         return table;
@@ -67,13 +70,14 @@ namespace
         static std::array<Factory, variant_count> table = []
         {
             std::array<Factory, variant_count> t{};
-            t[size_t(Variant::CpuBarnesHut)] = &make<nbody::CpuBarnesHutSolver>;
-            t[size_t(Variant::CpuMortonBarnesHut)] = &make<nbody::CpuMortonBarnesHutSolver>;
             t[size_t(Variant::CpuBruteForce)] = &make<nbody::CpuBruteForceSolver>;
-            t[size_t(Variant::GpuBarnesHut)] = &make_gpu<nbody::GpuSolver, nbody::Mode::NLogN>;
+            t[size_t(Variant::CpuBarnesHut)] = &make<nbody::CpuBarnesHutSolver>;
+            t[size_t(Variant::CpuBarnesHutMorton)] = &make<nbody::CpuMortonBarnesHutSolver>;
             t[size_t(Variant::GpuBruteForce)] = &make_gpu<nbody::GpuSolver, nbody::Mode::N2>;
-            t[size_t(Variant::GpuBarnesHutSoA)] = &make_gpu<nbody::GpuSolverSplit, nbody::Mode::NLogN>;
             t[size_t(Variant::GpuBruteForceSoA)] = &make_gpu<nbody::GpuSolverSplit, nbody::Mode::N2>;
+            t[size_t(Variant::GpuBarnesHut)] = &make_gpu<nbody::GpuSolver, nbody::Mode::NLogN>;
+            t[size_t(Variant::GpuBarnesHutSoA)] = &make_gpu<nbody::GpuSolverSplit, nbody::Mode::NLogN>;
+            t[size_t(Variant::GpuBarnesHutMortonSoA)] = &make<nbody::GpuSolverBarnesHutMortonSoA>;
             return t;
         }();
         return table;
@@ -87,7 +91,8 @@ namespace
     bool is_gpu(const Variant v)
     {
         return v == Variant::GpuBarnesHut || v == Variant::GpuBruteForce
-            || v == Variant::GpuBarnesHutSoA || v == Variant::GpuBruteForceSoA;
+            || v == Variant::GpuBarnesHutSoA || v == Variant::GpuBruteForceSoA
+            || v == Variant::GpuBarnesHutMortonSoA;
     }
 
     // THREAD SAFETY: the variant table is process-wide and its readers hand out
@@ -106,7 +111,8 @@ namespace
             const std::string reason = nbody::GpuDevice::probe();   // empty on success
             for (const Variant v : {
                     Variant::GpuBarnesHut, Variant::GpuBruteForce,
-                    Variant::GpuBarnesHutSoA, Variant::GpuBruteForceSoA })
+                    Variant::GpuBarnesHutSoA, Variant::GpuBruteForceSoA,
+                    Variant::GpuBarnesHutMortonSoA })
             {
                 infos()[size_t(v)].available = reason.empty();
                 infos()[size_t(v)].unavailable_reason = reason;

@@ -24,6 +24,12 @@ namespace nbody
         Mode mode = Mode::NLogN;
         float size = 0;
         int wrap = 1;
+
+        // Which radix-sort digit pass this dispatch is (0..7 for an 8-bit digit over a
+        // 64-bit morton key). Also selects ping vs. pong: even passes read buffer A and
+        // write buffer B, odd passes the reverse. Only meaningful to the morton/SoA
+        // pipeline's histogram/scan/scatter stages.
+        int radix_pass = 0;
     };
 
     // The bodies as parallel arrays, grouped by how often each field crosses the bus. Must
@@ -196,6 +202,15 @@ namespace nbody
         // trip between them; prefer it whenever both halves are wanted.
         void step(float dt, float theta, float gravity, Mode mode, float size, bool wrap, Readback readback);
 
+        // ---- morton/radix-tree layout: builds its own octree on the device each frame ----
+        //
+        // Shares the split layout's body buffers (pos_mass/vel_radius/acc), but replaces the
+        // CPU-built bh::Node tree with a device-side pipeline: morton encode, radix sort
+        // (histogram -> scan -> scatter, looped per digit), radix tree build, octree build,
+        // mass propagation, then force traversal. Integration is unchanged and reuses
+        // integrate() above.
+        void accelerate_morton_soa(float theta, float gravity, Readback readback);
+
     private:
 
         // RAII vk objects
@@ -257,6 +272,56 @@ namespace nbody
         // cleared per-array by a dispatch that writes it.
         Readback staging_valid = Readback::None;
 
+        // ---- morton/radix-tree layout ------------------------------------------------------
+        //
+        // A separate descriptor set/pipeline layout from `..._split` above: every stage here
+        // is always dispatched together, in a fixed order, every frame (unlike interleaved
+        // vs. split, which exist to be independently compared), so one shared set bound once
+        // is simpler than juggling several. It rebinds buffer_pos_mass/buffer_acc from the
+        // split layout (Vulkan allows a buffer in more than one descriptor set; no aliasing
+        // hazard given the barriers between passes) rather than duplicating them.
+        vk::raii::DescriptorSetLayout descriptor_set_layout_morton_soa;
+        vk::raii::DescriptorSet descriptor_set_morton_soa;
+        vk::raii::PipelineLayout pipeline_layout_morton_soa;
+
+        vk::raii::ShaderModule shader_morton_encode_split;
+        vk::raii::ShaderModule shader_radix_sort_histogram_split;
+        vk::raii::ShaderModule shader_radix_sort_scan_split;
+        vk::raii::ShaderModule shader_radix_sort_scatter_split;
+        vk::raii::ShaderModule shader_build_radix_tree_split;
+        vk::raii::ShaderModule shader_build_octree_split;
+        vk::raii::ShaderModule shader_propagate_masses_split;
+        vk::raii::ShaderModule shader_accelerate_morton_split;
+
+        vk::raii::Pipeline pipeline_morton_encode_split;
+        vk::raii::Pipeline pipeline_radix_sort_histogram_split;
+        vk::raii::Pipeline pipeline_radix_sort_scan_split;
+        vk::raii::Pipeline pipeline_radix_sort_scatter_split;
+        vk::raii::Pipeline pipeline_build_radix_tree_split;
+        vk::raii::Pipeline pipeline_build_octree_split;
+        vk::raii::Pipeline pipeline_propagate_masses_split;
+        vk::raii::Pipeline pipeline_accelerate_morton_split;
+
+        // Pure device-local scratch: nothing on the host ever reads or writes morton keys,
+        // sort scratch, radix nodes, or octree data directly, so unlike buffer_nodes above,
+        // none of these have a staging counterpart. Keys and indices are ping-ponged between
+        // an A and B buffer across radix-sort digit passes (see PushConstants::radix_pass).
+        nbody::Buffer buffer_morton_keys_a;
+        nbody::Buffer buffer_morton_keys_b;
+        nbody::Buffer buffer_sorted_indices_a;
+        nbody::Buffer buffer_sorted_indices_b;
+        nbody::Buffer buffer_radix_sort_histogram;
+        nbody::Buffer buffer_radix_nodes;
+        nbody::Buffer buffer_radix_meta;
+        nbody::Buffer buffer_octree_nodes;
+        nbody::Buffer buffer_octree_bounds;
+        nbody::Buffer buffer_octree_masses;
+
+        // Whether a bound device buffer has moved since the descriptor set was written.
+        // prepare_split() also sets this when buffer_pos_mass/buffer_acc move, since this
+        // set rebinds those two as well.
+        bool descriptors_stale_morton_soa = true;
+
         // Whether a bound device buffer has moved since the descriptor set was written.
         // Separate from the dirty ranges: re-binding can be needed with no new data.
         bool descriptors_stale_split = true;
@@ -300,6 +365,10 @@ namespace nbody
 
         // Rebind the interleaved set if a buffer under it has moved.
         void prepare_interleaved();
+
+        // Size the morton/radix-tree layout's scratch buffers to num_bodies and rebind if
+        // anything moved (including buffer_pos_mass/buffer_acc moving under prepare_split()).
+        void prepare_morton_soa();
 
         // command buffer recording and submission
         void record_dispatch(vk::raii::Pipeline& pipeline, vk::raii::PipelineLayout& layout, vk::raii::DescriptorSet& set);

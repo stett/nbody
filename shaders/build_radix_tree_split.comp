@@ -1,0 +1,29 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#extension GL_ARB_gpu_shader_int64 : require
+
+#include "common.glsl"
+#include "body_split.glsl"
+#include "octree.glsl"
+
+layout(std430, binding = 3) buffer MortonKeysA { uint64_t morton_keys_a[]; };
+layout(std430, binding = 8) buffer RadixNodes { RadixNode radix_nodes[]; };
+layout(std430, binding = 9) buffer RadixMeta { int radix_meta[]; };
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    // A radix tree has one fewer node than there are keys; the real dispatch should be
+    // sized to num_bodies - 1, but this placeholder reuses the body-count-based dispatch
+    // (see the TODO in GpuDevice::accelerate_morton_soa) and just bounds-checks against
+    // num_bodies here, tolerating one extra idle invocation.
+    if (i >= uint(pc.num_bodies))
+        return;
+
+    // Placeholder: zero-fills this node's slot. Real logic: the Karras 2012 radix-tree
+    // construction (see nbody::detail::scalar::radix_tree, source/detail/radix.h) reading
+    // morton_keys_a, which is where the sorted keys land after an even number of radix
+    // sort passes (see radix_sort_scatter_split.comp).
+    radix_nodes[i].child0_index = 0;
+    radix_nodes[i].child1_index = 0;
+    radix_meta[i] = 0;
+}

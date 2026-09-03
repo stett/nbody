@@ -1,0 +1,35 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#extension GL_ARB_gpu_shader_int64 : require
+
+#include "common.glsl"
+#include "body_split.glsl"
+#include "octree.glsl"
+
+layout(std430, binding = 3) buffer MortonKeysA { uint64_t morton_keys_a[]; };
+layout(std430, binding = 4) buffer MortonKeysB { uint64_t morton_keys_b[]; };
+layout(std430, binding = 5) buffer SortedIndicesA { int sorted_indices_a[]; };
+layout(std430, binding = 6) buffer SortedIndicesB { int sorted_indices_b[]; };
+layout(std430, binding = 7) buffer RadixSortHistogram { uint histogram[]; };
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= uint(pc.num_bodies))
+        return;
+
+    // Placeholder: an identity copy between the ping-pong buffers, keeping the swap
+    // mechanics real and exercised every pass without actually reordering anything by
+    // digit yet. Real logic: extract this pass's digit from the source key, look up this
+    // element's destination offset (from the scanned histogram), and write both the key
+    // and its paired body-index to that offset in the destination buffer.
+    if (pc.radix_pass % 2 == 0)
+    {
+        morton_keys_b[i] = morton_keys_a[i];
+        sorted_indices_b[i] = sorted_indices_a[i];
+    }
+    else
+    {
+        morton_keys_a[i] = morton_keys_b[i];
+        sorted_indices_a[i] = sorted_indices_b[i];
+    }
+}

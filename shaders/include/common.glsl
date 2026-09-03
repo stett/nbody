@@ -33,6 +33,7 @@ layout(push_constant) uniform PushConstants {
     int mode;
     float size;
     int wrap;
+    int radix_pass;
 } pc;
 
 const int N2 = 0;

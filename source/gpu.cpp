@@ -9,10 +9,20 @@
 #include <array>
 #include "gpu.h"
 #include "nbody/profile.h"
+#include "detail/radix.h"
+#include "detail/octree.h"
 #include "shaders/accelerate.h"
 #include "shaders/integrate.h"
 #include "shaders/accelerate_split.h"
 #include "shaders/integrate_split.h"
+#include "shaders/morton_encode_split.h"
+#include "shaders/radix_sort_histogram_split.h"
+#include "shaders/radix_sort_scan_split.h"
+#include "shaders/radix_sort_scatter_split.h"
+#include "shaders/build_radix_tree_split.h"
+#include "shaders/build_octree_split.h"
+#include "shaders/propagate_masses_split.h"
+#include "shaders/accelerate_morton_split.h"
 
 using nbody::GpuDevice;
 
@@ -110,6 +120,38 @@ GpuDevice::GpuDevice()
     , staging_pos_mass(make_staging_buffer<BodyPosMass>(0))
     , staging_vel_radius(make_staging_buffer<BodyVelRadius>(0))
     , staging_acc(make_staging_buffer<BodyAcc>(0))
+
+    // morton/radix-tree: body arrays (from the split layout, rebound) at bindings 0-2,
+    // this pipeline's own scratch at bindings 3-12
+    , descriptor_set_layout_morton_soa(make_descriptor_set_layout(13))
+    , descriptor_set_morton_soa(make_descriptor_set(descriptor_set_layout_morton_soa))
+    , pipeline_layout_morton_soa(make_pipeline_layout(descriptor_set_layout_morton_soa))
+    , shader_morton_encode_split(make_shader(spv_morton_encode_split))
+    , shader_radix_sort_histogram_split(make_shader(spv_radix_sort_histogram_split))
+    , shader_radix_sort_scan_split(make_shader(spv_radix_sort_scan_split))
+    , shader_radix_sort_scatter_split(make_shader(spv_radix_sort_scatter_split))
+    , shader_build_radix_tree_split(make_shader(spv_build_radix_tree_split))
+    , shader_build_octree_split(make_shader(spv_build_octree_split))
+    , shader_propagate_masses_split(make_shader(spv_propagate_masses_split))
+    , shader_accelerate_morton_split(make_shader(spv_accelerate_morton_split))
+    , pipeline_morton_encode_split(make_pipeline(shader_morton_encode_split, pipeline_layout_morton_soa))
+    , pipeline_radix_sort_histogram_split(make_pipeline(shader_radix_sort_histogram_split, pipeline_layout_morton_soa))
+    , pipeline_radix_sort_scan_split(make_pipeline(shader_radix_sort_scan_split, pipeline_layout_morton_soa))
+    , pipeline_radix_sort_scatter_split(make_pipeline(shader_radix_sort_scatter_split, pipeline_layout_morton_soa))
+    , pipeline_build_radix_tree_split(make_pipeline(shader_build_radix_tree_split, pipeline_layout_morton_soa))
+    , pipeline_build_octree_split(make_pipeline(shader_build_octree_split, pipeline_layout_morton_soa))
+    , pipeline_propagate_masses_split(make_pipeline(shader_propagate_masses_split, pipeline_layout_morton_soa))
+    , pipeline_accelerate_morton_split(make_pipeline(shader_accelerate_morton_split, pipeline_layout_morton_soa))
+    , buffer_morton_keys_a(make_device_buffer<uint64_t>(0))
+    , buffer_morton_keys_b(make_device_buffer<uint64_t>(0))
+    , buffer_sorted_indices_a(make_device_buffer<int32_t>(0))
+    , buffer_sorted_indices_b(make_device_buffer<int32_t>(0))
+    , buffer_radix_sort_histogram(make_device_buffer<uint32_t>(0))
+    , buffer_radix_nodes(make_device_buffer<detail::RadixNode>(0))
+    , buffer_radix_meta(make_device_buffer<int32_t>(0))
+    , buffer_octree_nodes(make_device_buffer<detail::OctreeNode>(0))
+    , buffer_octree_bounds(make_device_buffer<detail::OctreeBounds<3>>(0))
+    , buffer_octree_masses(make_device_buffer<detail::OctreeNodeMass>(0))
 { }
 
 std::string GpuDevice::probe() noexcept
@@ -267,12 +309,13 @@ vk::raii::CommandBuffer GpuDevice::make_command_buffer()
 vk::raii::DescriptorPool GpuDevice::make_descriptor_pool()
 {
     // The pool must cover every descriptor in every set allocated from it: the interleaved
-    // layout's two bindings and the split layout's four. Under-sizing this fails with
-    // ErrorOutOfPoolMemory on drivers that enforce it (e.g. MoltenVK).
+    // layout's two bindings, the split layout's four, and the morton/radix-tree layout's
+    // thirteen. Under-sizing this fails with ErrorOutOfPoolMemory on drivers that enforce it
+    // (e.g. MoltenVK).
     std::vector<vk::DescriptorPoolSize> pool_sizes = {
-        vk::DescriptorPoolSize(vk::DescriptorType::eStorageBuffer, 2 + 4)
+        vk::DescriptorPoolSize(vk::DescriptorType::eStorageBuffer, 2 + 4 + 13)
     };
-    return { device, { { vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet }, 2, pool_sizes } };
+    return { device, { { vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet }, 3, pool_sizes } };
 }
 
 // Consecutive storage buffers from binding 0: bodies then nodes, or three body arrays then
@@ -598,9 +641,13 @@ void GpuDevice::prepare_split()
         return true;
     };
 
-    grow(buffer_pos_mass, staging_pos_mass);
+    // buffer_pos_mass and buffer_acc are also bound into descriptor_set_morton_soa (see
+    // prepare_morton_soa()); buffer_vel_radius is not, so only those two need to stale it.
+    if (grow(buffer_pos_mass, staging_pos_mass))
+        descriptors_stale_morton_soa = true;
     grow(buffer_vel_radius, staging_vel_radius);
-    grow(buffer_acc, staging_acc);
+    if (grow(buffer_acc, staging_acc))
+        descriptors_stale_morton_soa = true;
 
     // Shared with the interleaved layout, whose bindings a move invalidates as well. Floored
     // at one node because integrate() binds the buffer without ever staging a tree, and a
@@ -628,6 +675,74 @@ void GpuDevice::prepare_split()
     for (uint32_t binding = 0; binding < descriptor_set_writes.size(); ++binding)
         descriptor_set_writes[binding] = vk::WriteDescriptorSet{
             *descriptor_set_split,
+            binding,
+            0, // starting array element
+            1, // descriptor count
+            vk::DescriptorType::eStorageBuffer,
+            nullptr,
+            &buffer_infos[binding]
+        };
+
+    device.updateDescriptorSets(descriptor_set_writes, { });
+}
+
+// Grows the morton/radix-tree layout's own scratch buffers to num_bodies and rebinds if
+// anything moved, including buffer_pos_mass/buffer_acc moving under prepare_split() (see
+// descriptors_stale_morton_soa there). Unlike prepare_split()'s buffers, none of these are
+// ever written from the host, so there is nothing here to stage or mark dirty -- growing a
+// buffer just discards whatever device-side pass would otherwise have populated it, which
+// is fine since accelerate_morton_soa() always reruns every pass from morton_encode onward.
+void GpuDevice::prepare_morton_soa()
+{
+    const uint32_t n = static_cast<uint32_t>(push_constants.num_bodies);
+
+    // Headroom for the tree buffers: a full octree has more nodes than leaves, and the
+    // exact bound depends on the tree shape, so this over-allocates rather than computing
+    // it exactly -- cheap, since it is device-local scratch with no host copy to keep in
+    // sync. The radix-sort histogram is sized per 8-bit-digit bucket per workgroup.
+    const size_t tree_capacity = 2 * static_cast<size_t>(n) + 1;
+    const size_t workgroups = (n + 255) / 256;
+    const size_t histogram_capacity = 256 * std::max<size_t>(workgroups, 1);
+
+    bool moved = false;
+    moved |= buffer_morton_keys_a.reserve(sizeof(uint64_t) * n);
+    moved |= buffer_morton_keys_b.reserve(sizeof(uint64_t) * n);
+    moved |= buffer_sorted_indices_a.reserve(sizeof(int32_t) * n);
+    moved |= buffer_sorted_indices_b.reserve(sizeof(int32_t) * n);
+    moved |= buffer_radix_sort_histogram.reserve(sizeof(uint32_t) * histogram_capacity);
+    moved |= buffer_radix_nodes.reserve(sizeof(detail::RadixNode) * n);
+    moved |= buffer_radix_meta.reserve(sizeof(int32_t) * n);
+    moved |= buffer_octree_nodes.reserve(sizeof(detail::OctreeNode) * tree_capacity);
+    moved |= buffer_octree_bounds.reserve(sizeof(detail::OctreeBounds<3>) * tree_capacity);
+    moved |= buffer_octree_masses.reserve(sizeof(detail::OctreeNodeMass) * tree_capacity);
+
+    if (moved)
+        descriptors_stale_morton_soa = true;
+
+    if (!descriptors_stale_morton_soa) { return; }
+    descriptors_stale_morton_soa = false;
+
+    const std::array<vk::DescriptorBufferInfo, 13> buffer_infos
+    {
+        vk::DescriptorBufferInfo{ buffer_pos_mass.buffer, 0, buffer_pos_mass.size },
+        vk::DescriptorBufferInfo{ buffer_vel_radius.buffer, 0, buffer_vel_radius.size },
+        vk::DescriptorBufferInfo{ buffer_acc.buffer, 0, buffer_acc.size },
+        vk::DescriptorBufferInfo{ buffer_morton_keys_a.buffer, 0, buffer_morton_keys_a.size },
+        vk::DescriptorBufferInfo{ buffer_morton_keys_b.buffer, 0, buffer_morton_keys_b.size },
+        vk::DescriptorBufferInfo{ buffer_sorted_indices_a.buffer, 0, buffer_sorted_indices_a.size },
+        vk::DescriptorBufferInfo{ buffer_sorted_indices_b.buffer, 0, buffer_sorted_indices_b.size },
+        vk::DescriptorBufferInfo{ buffer_radix_sort_histogram.buffer, 0, buffer_radix_sort_histogram.size },
+        vk::DescriptorBufferInfo{ buffer_radix_nodes.buffer, 0, buffer_radix_nodes.size },
+        vk::DescriptorBufferInfo{ buffer_radix_meta.buffer, 0, buffer_radix_meta.size },
+        vk::DescriptorBufferInfo{ buffer_octree_nodes.buffer, 0, buffer_octree_nodes.size },
+        vk::DescriptorBufferInfo{ buffer_octree_bounds.buffer, 0, buffer_octree_bounds.size },
+        vk::DescriptorBufferInfo{ buffer_octree_masses.buffer, 0, buffer_octree_masses.size },
+    };
+
+    std::array<vk::WriteDescriptorSet, 13> descriptor_set_writes;
+    for (uint32_t binding = 0; binding < descriptor_set_writes.size(); ++binding)
+        descriptor_set_writes[binding] = vk::WriteDescriptorSet{
+            *descriptor_set_morton_soa,
             binding,
             0, // starting array element
             1, // descriptor count
@@ -824,6 +939,61 @@ void GpuDevice::accelerate(const float theta, const float gravity, const Mode mo
     command_buffer.begin({ });
     record_upload_split();
     record_dispatch(pipeline_accelerate_split, pipeline_layout_split, descriptor_set_split);
+    record_readback_split(readback);
+    command_buffer.end();
+
+    submit_and_wait(false, buffer_pos_mass.buffer);
+}
+
+// Builds the octree on the device (morton encode, radix sort, radix tree build, octree
+// build, mass propagation) and then traverses it once per body, all in one submission.
+//
+// TODO: record_dispatch() sizes every dispatch by num_bodies groups of 256, which is right
+// for morton_encode/histogram/scatter/accelerate_morton (one thread per body) but not for
+// scan (one thread per histogram bucket, a different and usually much smaller count) or the
+// radix-tree/octree-build passes (one thread per node, not per body). Reusing it for all of
+// them is harmless for now since every stage here is still a placeholder that only touches
+// its own bound, but real versions of scan/build_radix_tree/build_octree will want their
+// own dispatch call with a bucket- or node-count-based group count instead.
+void GpuDevice::accelerate_morton_soa(const float theta, const float gravity, const Readback readback)
+{
+    NBODY_PROFILE_ZONE();
+
+    // mode is meaningless to this pipeline (there is no N2/NLogN choice here), but every
+    // dispatch still pushes the whole PushConstants block, so leave it at whatever it was.
+    set_accelerate_constants(theta, gravity, push_constants.mode);
+    prepare_split();
+    prepare_morton_soa();
+
+    // Only the accelerations are touched; staged positions and velocities stay good.
+    staging_valid = staging_valid & ~Readback::Accelerations;
+
+    command_buffer.begin({ });
+    record_upload_split();
+
+    record_dispatch(pipeline_morton_encode_split, pipeline_layout_morton_soa, descriptor_set_morton_soa);
+    record_dispatch_barrier();
+
+    constexpr int radix_passes = 8;   // one per 8-bit digit of a 64-bit morton key
+    for (int pass = 0; pass < radix_passes; ++pass)
+    {
+        push_constants.radix_pass = pass;
+        record_dispatch(pipeline_radix_sort_histogram_split, pipeline_layout_morton_soa, descriptor_set_morton_soa);
+        record_dispatch_barrier();
+        record_dispatch(pipeline_radix_sort_scan_split, pipeline_layout_morton_soa, descriptor_set_morton_soa);
+        record_dispatch_barrier();
+        record_dispatch(pipeline_radix_sort_scatter_split, pipeline_layout_morton_soa, descriptor_set_morton_soa);
+        record_dispatch_barrier();
+    }
+
+    record_dispatch(pipeline_build_radix_tree_split, pipeline_layout_morton_soa, descriptor_set_morton_soa);
+    record_dispatch_barrier();
+    record_dispatch(pipeline_build_octree_split, pipeline_layout_morton_soa, descriptor_set_morton_soa);
+    record_dispatch_barrier();
+    record_dispatch(pipeline_propagate_masses_split, pipeline_layout_morton_soa, descriptor_set_morton_soa);
+    record_dispatch_barrier();
+    record_dispatch(pipeline_accelerate_morton_split, pipeline_layout_morton_soa, descriptor_set_morton_soa);
+
     record_readback_split(readback);
     command_buffer.end();
 

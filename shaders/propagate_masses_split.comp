@@ -1,0 +1,22 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+#include "common.glsl"
+#include "body_split.glsl"
+#include "octree.glsl"
+
+layout(std430, binding = 10) buffer OctreeNodes { OctreeNode octree_nodes[]; };
+layout(std430, binding = 12) buffer OctreeNodeMasses { OctreeNodeMass octree_masses[]; };
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= uint(pc.num_bodies))
+        return;
+
+    // Placeholder: zero-fills this node's mass slot. Real logic: bottom-up mass
+    // propagation from leaves to root (see nbody::detail::scalar::build_octree_masses,
+    // source/detail/octree.cpp), reading pos_mass for leaf data and octree_nodes for
+    // parent/child topology.
+    octree_masses[i].center = vec3(0);
+    octree_masses[i].mass = 0;
+}
