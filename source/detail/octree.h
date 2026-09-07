@@ -121,6 +121,8 @@ namespace nbody::detail
             const int32_t i_offset = 0,
             const int32_t i_count = -1)
         {
+            NBODY_PROFILE_ZONE()
+
             const int32_t i_radix_count = (i_count < 0) ? static_cast<int32_t>(radix_nodes.size() - i_offset) : i_count;
             for (int32_t i_radix_local = 0; i_radix_local < i_radix_count; ++i_radix_local)
             {
@@ -153,7 +155,7 @@ namespace nbody::detail
             const int32_t i_offset = 0,
             const int32_t i_count = -1)
         {
-            NBODY_PROFILE_ZONE_NAMED("build_octree (scalar)");
+            NBODY_PROFILE_ZONE();
 
             using OctreeBoundsT = OctreeBounds<MortonT::modulus>;
             using VectorT = typename OctreeBoundsT::VectorT;
@@ -447,7 +449,7 @@ namespace nbody::detail
         template <typename MortonT>
         void build_octree(span<const MortonT> keys, OctreeCache& cache, vector<OctreeNode>& octree_nodes, vector<OctreeBounds<MortonT::modulus>>& octree_bounds)
         {
-            NBODY_PROFILE_ZONE_NAMED("build_octree");
+            NBODY_PROFILE_ZONE();
             using OctreeBoundsT = OctreeBounds<MortonT::modulus>;
 
             if (try_build_degenerate_octree<MortonT>(keys, cache, octree_nodes, octree_bounds))
@@ -566,7 +568,7 @@ namespace nbody::detail
         template <typename MortonT>
         void build_octree(BS::thread_pool& pool, span<const MortonT> keys, OctreeCache& cache, vector<OctreeNode>& octree_nodes, vector<OctreeBounds<MortonT::modulus>>& octree_bounds)
         {
-            NBODY_PROFILE_ZONE_NAMED("build_octree");
+            NBODY_PROFILE_ZONE();
             using OctreeBoundsT = OctreeBounds<MortonT::modulus>;
 
             if (try_build_degenerate_octree<MortonT>(keys, cache, octree_nodes, octree_bounds))
@@ -575,25 +577,35 @@ namespace nbody::detail
             // build the radix tree
             {
                 NBODY_PROFILE_ZONE_NAMED("build radix tree");
-                cache.radix_nodes.resize(keys.size() - 1);
-                cache.radix_parents.resize(cache.radix_nodes.size());
-                cache.node_counts.resize(cache.radix_nodes.size());
-                cache.node_range_ends.resize(cache.radix_nodes.size());
+                {
+                    NBODY_PROFILE_ZONE_NAMED("allocations");
+                    cache.radix_nodes.resize(keys.size() - 1);
+                    cache.radix_parents.resize(cache.radix_nodes.size());
+                    cache.node_counts.resize(cache.radix_nodes.size());
+                    cache.node_range_ends.resize(cache.radix_nodes.size());
+                }
                 parallel::radix_tree_thread_pool<MortonT>(pool, keys, cache.radix_nodes, cache.radix_parents, cache.node_counts, cache.node_range_ends);
             }
 
             {
                 NBODY_PROFILE_ZONE_NAMED("compute octree node count totals");
-                cache.node_count_totals.resize(cache.radix_nodes.size());
+                {
+                    NBODY_PROFILE_ZONE_NAMED("allocations");
+                    cache.node_count_totals.resize(cache.radix_nodes.size());
+                }
                 parallel_for(pool, cache.node_counts.size(), [&cache](const size_t i)
                 {
+                    NBODY_PROFILE_ZONE_NAMED("compute octree node count totals chunk");
                     cache.node_count_totals[i] = cache.node_counts[i].internals + cache.node_counts[i].leafs;
                 });
             }
 
             {
                 NBODY_PROFILE_ZONE_NAMED("compute octree node offsets");
-                cache.offsets.resize(cache.radix_nodes.size());
+                {
+                    NBODY_PROFILE_ZONE_NAMED("allocations");
+                    cache.offsets.resize(cache.radix_nodes.size());
+                }
                 exclusive_scan(cache.node_count_totals.begin(), cache.node_count_totals.end(), cache.offsets.begin(), 0);
             }
 
@@ -601,7 +613,10 @@ namespace nbody::detail
                 // map each key to the octree node holding it. depends on the offsets, so it cannot
                 // be folded into the radix pass above.
                 NBODY_PROFILE_ZONE_NAMED("map octree leaf nodes");
-                cache.leaf_nodes.resize(keys.size());
+                {
+                    NBODY_PROFILE_ZONE_NAMED("allocations");
+                    cache.leaf_nodes.resize(keys.size());
+                }
                 parallel_blocks(pool, cache.radix_nodes.size(), [&](const std::ptrdiff_t begin, const std::ptrdiff_t end)
                 {
                     scalar::octree_leaf_nodes(
@@ -617,11 +632,15 @@ namespace nbody::detail
             {
                 // build and return the octree
                 NBODY_PROFILE_ZONE_NAMED("populate octree nodes");
-                const int32_t num_octree_nodes = 1 + cache.offsets.back() + cache.node_count_totals.back();
-                octree_nodes.resize(num_octree_nodes);
-                octree_bounds.resize(num_octree_nodes);
+                {
+                    NBODY_PROFILE_ZONE_NAMED("allocations");
+                    const int32_t num_octree_nodes = 1 + cache.offsets.back() + cache.node_count_totals.back();
+                    octree_nodes.resize(num_octree_nodes);
+                    octree_bounds.resize(num_octree_nodes);
+                }
                 parallel_blocks(pool, cache.radix_nodes.size(), [&](const std::ptrdiff_t begin, const std::ptrdiff_t end)
                 {
+                    NBODY_PROFILE_ZONE_NAMED("build octree chunk");
                     scalar::build_octree<MortonT>(
                         keys,
                         cache.radix_nodes,

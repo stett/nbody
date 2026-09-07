@@ -47,7 +47,7 @@ namespace nbody
                 _node_masses.clear();
 
                 {
-                    NBODY_PROFILE_ZONE_NAMED("allocate morton codes");
+                    NBODY_PROFILE_ZONE_NAMED("allocations");
                     _keyed.resize(_state->bodies.size());
                 }
 
@@ -85,7 +85,10 @@ namespace nbody
                     // build_octree wants a plain span<const Morton>; this is a sequential
                     // copy over data that's already in its final sorted order, not a gather.
                     NBODY_PROFILE_ZONE_NAMED("extract sorted keys");
-                    _keys.resize(_keyed.size());
+                    {
+                        NBODY_PROFILE_ZONE_NAMED("allocations");
+                        _keys.resize(_keyed.size());
+                    }
                     detail::parallel_for(*_context->pool, _keyed.size(), [this](const size_t i)
                     {
                         _keys[i] = _keyed[i].key;
@@ -106,8 +109,11 @@ namespace nbody
                         // the one random-access pass the fix costs: everywhere else only
                         // touches the small (key, index) pairs, not the full body data.
                         NBODY_PROFILE_ZONE_NAMED("gather positions and masses into sorted order");
-                        _body_positions.resize(_keyed.size());
-                        _body_masses.resize(_keyed.size());
+                        {
+                            NBODY_PROFILE_ZONE_NAMED("allocations");
+                            _body_positions.resize(_keyed.size());
+                            _body_masses.resize(_keyed.size());
+                        }
                         detail::parallel_for(*_context->pool, _keyed.size(), [this](const size_t i_leaf)
                         {
                             NBODY_PROFILE_ZONE_NAMED("gather positions block");
@@ -119,10 +125,16 @@ namespace nbody
 
                     {
                         NBODY_PROFILE_ZONE_NAMED("propagate leaf node masses");
-                        _node_masses.resize(_nodes.size());
-                        if (_node_counters.size() != _nodes.size())
-                            _node_counters = std::vector<std::atomic<uint8_t>>(_nodes.size());
-                        detail::parallel::build_octree_masses(*_context->pool, _nodes, _cache.leaf_nodes, _body_positions, _body_masses, _node_masses, _node_counters);
+                        {
+                            NBODY_PROFILE_ZONE_NAMED("allocations");
+                            _node_masses.resize(_nodes.size());
+                            if (_node_counters.size() != _nodes.size())
+                                _node_counters = std::vector<std::atomic<uint8_t>>(_nodes.size());
+                        }
+                        {
+                            NBODY_PROFILE_ZONE_NAMED("build node masses");
+                            detail::parallel::build_octree_masses(*_context->pool, _nodes, _cache.leaf_nodes, _body_positions, _body_masses, _node_masses, _node_counters);
+                        }
                     }
                 }
             }
