@@ -152,6 +152,7 @@ GpuDevice::GpuDevice()
     , buffer_octree_nodes(make_device_buffer<detail::OctreeNode>(0))
     , buffer_octree_bounds(make_device_buffer<detail::OctreeBounds<3>>(0))
     , buffer_octree_masses(make_device_buffer<detail::OctreeNodeMass>(0))
+    , staging_morton_keys_a(make_staging_buffer<uint64_t>(0))
 { }
 
 std::string GpuDevice::probe() noexcept
@@ -998,6 +999,53 @@ void GpuDevice::accelerate_morton_soa(const float theta, const float gravity, co
     command_buffer.end();
 
     submit_and_wait(false, buffer_pos_mass.buffer);
+}
+
+std::vector<uint64_t> GpuDevice::debug_morton_encode(const std::vector<Body>& bodies, const float size)
+{
+    const size_t num_bodies = bodies.size();
+    if (num_bodies == 0)
+        return {};
+
+    reserve_bodies(num_bodies);
+    const BodyMapping mapping = map_bodies(0, num_bodies);
+    for (size_t i = 0; i < num_bodies; ++i)
+    {
+        mapping.pos_mass[i] = { bodies[i].pos, bodies[i].mass };
+        mapping.vel_radius[i] = { bodies[i].vel, bodies[i].radius };
+        mapping.acc[i] = { bodies[i].acc, 0 };
+    }
+
+    push_constants.size = size;
+
+    prepare_split();
+    prepare_morton_soa();
+    staging_morton_keys_a.reserve(sizeof(uint64_t) * num_bodies);
+
+    command_buffer.begin({ });
+    record_upload_split();
+    record_dispatch(pipeline_morton_encode_split, pipeline_layout_morton_soa, descriptor_set_morton_soa);
+
+    // Copy the freshly-written keys back to host-visible staging, mirroring the barrier
+    // pattern in record_readback_split() -- this pipeline has no such readback of its own
+    // since nothing else ever needs morton keys back on the host.
+    const vk::MemoryBarrier before(vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eTransferRead);
+    command_buffer.pipelineBarrier(
+        vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eTransfer, { }, before, { }, { });
+
+    command_buffer.copyBuffer(buffer_morton_keys_a.buffer, staging_morton_keys_a.buffer,
+        vk::BufferCopy(0, 0, sizeof(uint64_t) * num_bodies));
+
+    const vk::MemoryBarrier after(vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eHostRead);
+    command_buffer.pipelineBarrier(
+        vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eHost, { }, after, { }, { });
+
+    command_buffer.end();
+    submit_and_wait(false, buffer_pos_mass.buffer);
+
+    std::vector<uint64_t> result(num_bodies);
+    std::memcpy(result.data(), staging_morton_keys_a.at(0), sizeof(uint64_t) * num_bodies);
+    return result;
 }
 
 // A whole simulation step in one submission.

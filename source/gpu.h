@@ -211,6 +211,13 @@ namespace nbody
         // integrate() above.
         void accelerate_morton_soa(float theta, float gravity, Readback readback);
 
+        // TESTING ONLY: dispatches pipeline_morton_encode_split alone (no sort, no tree
+        // build) and reads the resulting keys back to the host, so the shader can be
+        // checked against the CPU reference (detail::Morton<uint64_t, 3>) without needing
+        // the rest of the pipeline implemented yet. Not part of the real per-frame path --
+        // nothing else in GpuDevice reads morton keys back to the host.
+        std::vector<uint64_t> debug_morton_encode(const std::vector<Body>& bodies, float size);
+
     private:
 
         // RAII vk objects
@@ -316,6 +323,10 @@ namespace nbody
         nbody::Buffer buffer_octree_nodes;
         nbody::Buffer buffer_octree_bounds;
         nbody::Buffer buffer_octree_masses;
+
+        // The one exception to the above: debug_morton_encode() (testing only) needs to
+        // read buffer_morton_keys_a back to the host to check it against the CPU reference.
+        nbody::Buffer staging_morton_keys_a;
 
         // Whether a bound device buffer has moved since the descriptor set was written.
         // prepare_split() also sets this when buffer_pos_mass/buffer_acc move, since this

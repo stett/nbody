@@ -1,9 +1,14 @@
+#include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <vector>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
 #include "nbody/sim.h"
 #include "nbody/util.h"
+#include "context.h"
+#include "gpu.h"
+#include "detail/morton.h"
 
 // The GPU solver is the first one that keeps a representation of its own, so it is the
 // first real exercise of the State conversion protocol. Everything here skips cleanly
@@ -366,4 +371,45 @@ TEST_CASE("switching between gpu variants reuses one device", "[sim][gpu]")
     }
 
     REQUIRE(sim.bodies().size() == 512);
+}
+
+TEST_CASE("morton encode compute pipeline matches the CPU reference", "[gpu][morton]")
+{
+    // pipeline_morton_encode_split (shaders/morton_encode_split.comp) in isolation, via
+    // GpuDevice::debug_morton_encode() (testing only -- see its declaration in gpu.h),
+    // checked against detail::Morton<uint64_t, 3> (source/detail/morton.h), the same CPU
+    // reference CpuMortonBarnesHutSolver::accelerate() encodes against.
+    if (skip_without_gpu(nbody::Variant::GpuBarnesHutMortonSoA))
+        return;
+
+    nbody::Context context;
+    const std::shared_ptr<nbody::GpuDevice> gpu = context.require_gpu();
+
+    constexpr float size = 1000.f;
+    std::vector<nbody::Body> bodies(8);
+    bodies[0].pos = { 0.f, 0.f, 0.f };
+    bodies[1].pos = { 400.f, 0.f, 0.f };
+    bodies[2].pos = { -400.f, 250.f, 0.f };
+    bodies[3].pos = { 123.4f, -321.5f, 88.8f };
+    bodies[4].pos = { -499.f, -499.f, -499.f };
+    bodies[5].pos = { 499.f, 499.f, 499.f };
+    bodies[6].pos = { 0.f, 0.f, 499.9f };
+    bodies[7].pos = { -12.f, 34.f, -56.f };
+
+    const std::vector<uint64_t> gpu_keys = gpu->debug_morton_encode(bodies, size);
+    REQUIRE(gpu_keys.size() == bodies.size());
+
+    using Morton = nbody::detail::Morton<uint64_t, 3>;
+    const float size_inv = 1.f / size;
+    for (size_t i = 0; i < bodies.size(); ++i)
+    {
+        const nbody::Vector& pos = bodies[i].pos;
+        const Morton expected(
+            std::clamp((pos.x * size_inv) + .5f, 0.f, 1.f),
+            std::clamp((pos.y * size_inv) + .5f, 0.f, 1.f),
+            std::clamp((pos.z * size_inv) + .5f, 0.f, 1.f));
+
+        INFO("body " << i << " pos (" << pos.x << ", " << pos.y << ", " << pos.z << ")");
+        REQUIRE(gpu_keys[i] == expected.bits());
+    }
 }
