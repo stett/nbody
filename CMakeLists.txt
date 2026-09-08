@@ -1,4 +1,21 @@
 cmake_minimum_required(VERSION 3.24)
+
+# Declared before project() because the demo's Cinder dependency needs two toolchain
+# variables settled before compiler detection and before any target is created.
+option(NBODY_DEMO "Build the Cinder-based demo application" OFF)
+option(NBODY_TESTS "Build the Catch2 test suite" ON)
+
+# Cinder's platform_macosx.cmake force-sets CMAKE_OSX_ARCHITECTURES to "arm64;x86_64"
+# when it is empty. That happens partway through add_subdirectory(external), so nbody's
+# targets are created single-arch and nbody_demo's are created universal -- the link then
+# fails with undefined x86_64 symbols. Settle the architecture up front so every target
+# in the tree agrees. Must precede project() to apply to compiler detection.
+# CMAKE_HOST_SYSTEM_PROCESSOR is still empty this early, so query the host directly.
+if (NBODY_DEMO AND APPLE AND NOT CMAKE_OSX_ARCHITECTURES)
+    cmake_host_system_information(RESULT host_arch QUERY OS_PLATFORM)
+    set(CMAKE_OSX_ARCHITECTURES "${host_arch}" CACHE STRING "macOS architectures")
+endif()
+
 project(nbody)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -7,6 +24,15 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # nothing. Separate options because the profiler fetches its dependencies while configuring.
 option(NBODY_TRACY "Instrument with the Tracy profiler" OFF)
 option(NBODY_TRACY_PROFILER "Build the Tracy profiler application as a target" OFF)
+
+if (NBODY_DEMO)
+    # Cinder needs both of these; see demo/CMakeLists.txt. Scoped to the demo build so a
+    # library-only consumer keeps choosing its own runtime, as documented in the MSVC block below.
+    if (WIN32)
+        add_compile_definitions(NOMINMAX)
+    endif()
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+endif()
 
 # add dependencies
 add_subdirectory(external)
@@ -69,7 +95,14 @@ if (MSVC)
 endif()
 
 # add nbody test suite
-add_subdirectory(tests)
+if (NBODY_TESTS)
+    add_subdirectory(tests)
+endif()
+
+# add the Cinder-based demo application, after nbody itself exists to link against
+if (NBODY_DEMO)
+    add_subdirectory(demo)
+endif()
 
 # compile shaders
 #
