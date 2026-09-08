@@ -9,6 +9,7 @@ namespace nbody
         CpuBruteForce = 0,     // O(n^2) exact summation; the correctness reference
         CpuBarnesHut,          // O(n log n) tree approximation, serial tree construction phase, multithreaded query
         CpuBarnesHutMorton,    // O(n log n) tree approximation, multithread construction and query
+        SimdBarnesHutMorton,   // O(n log n) tree approximation, multithread construction and query, SIMD query
         GpuBruteForce,         // full vulkan compute, exact summation
         GpuBruteForceSoA,      // full vulkan compute, exact summation, rough SoA memory layout
         GpuBarnesHut,          // cpu tree construction, vulkan compute query, tree approximation
@@ -19,7 +20,7 @@ namespace nbody
 
     struct VariantInfo
     {
-        Variant variant = Variant::CpuBarnesHut;
+        Variant variant = Variant::SimdBarnesHutMorton;
 
         // display label, e.g. for a UI combo box
         const char* name = "";

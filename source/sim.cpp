@@ -7,10 +7,8 @@
 #include "solver.h"
 #include "solvers/cpu_barnes_hut.h"
 #include "solvers/cpu_brute_force.h"
-
-// Not in the variant table yet -- included so the compiler holds the in-progress solver to
-// the Solver interface instead of letting it rot uncompiled.
 #include "solvers/cpu_morton_barnes_hut.h"
+#include "solvers/simd_morton_barnes_hut.h"
 #include "solvers/gpu_solver.h"
 #include "solvers/gpu_solver_split.h"
 #include "solvers/gpu_solver_barnes_hut_morton_soa.h"
@@ -50,6 +48,8 @@ namespace
                 Variant::CpuBarnesHut, "CPU Barnes-Hut", "O(n log n) approximation, serial construction", true, {} };
             t[size_t(Variant::CpuBarnesHutMorton)] = {
                 Variant::CpuBarnesHutMorton, "CPU Barnes-Hut (Morton)", "O(n log n) approximation, parallel construction", true, {} };
+            t[size_t(Variant::SimdBarnesHutMorton)] = {
+                Variant::SimdBarnesHutMorton, "SIMD Barnes-Hut (Morton)", "O(n log n) approximation, parallel construction", true, {} };
             t[size_t(Variant::GpuBruteForce)] = {
                 Variant::GpuBruteForce, "GPU brute force", "Vulkan compute, O(n^2) exact summation", false, "not probed" };
             t[size_t(Variant::GpuBruteForceSoA)] = {
@@ -73,6 +73,7 @@ namespace
             t[size_t(Variant::CpuBruteForce)] = &make<nbody::CpuBruteForceSolver>;
             t[size_t(Variant::CpuBarnesHut)] = &make<nbody::CpuBarnesHutSolver>;
             t[size_t(Variant::CpuBarnesHutMorton)] = &make<nbody::CpuMortonBarnesHutSolver>;
+            t[size_t(Variant::SimdBarnesHutMorton)] = &make<nbody::SimdMortonBarnesHutSolver>;
             t[size_t(Variant::GpuBruteForce)] = &make_gpu<nbody::GpuSolver, nbody::Mode::N2>;
             t[size_t(Variant::GpuBruteForceSoA)] = &make_gpu<nbody::GpuSolverSplit, nbody::Mode::N2>;
             t[size_t(Variant::GpuBarnesHut)] = &make_gpu<nbody::GpuSolver, nbody::Mode::NLogN>;

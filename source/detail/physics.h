@@ -1,6 +1,8 @@
 #pragma once
 #include <cmath>
 #include <cstddef>
+#include <span>
+#include "hwy/highway.h"
 #include "nbody/body.h"
 #include "nbody/vector.h"
 
@@ -67,5 +69,72 @@ namespace nbody::detail
 
         for (size_t i = 0; i < 3; ++i)
             body.pos[i] = wrap(body.pos[i], size);
+    }
+
+    namespace simd
+    {
+        namespace hn = hwy::HWY_NAMESPACE;
+        using std::span;
+        using std::vector;
+
+        template <class D, class V = hn::Vec<D>>
+        HWY_INLINE V wrap(D d, V x, V size)
+        {
+            const V half = hn::Mul(size, hn::Set(d, 0.5f));
+            const V shifted = hn::Add(x, half);
+            const V q = hn::Floor(hn::Div(shifted, size));
+            const V wrapped = hn::NegMulAdd(q, size, shifted);  // shifted - q*size
+            return hn::Sub(wrapped, half);
+        }
+
+        void integrate_euler(
+            span<float> x, span<float> y, span<float> z,
+            span<float> vx, span<float> vy, span<float> vz,
+            span<float> ax, span<float> ay, span<float> az,
+            const float dt, const float size, const bool do_wrap)
+        {
+            const hn::ScalableTag<float> d;
+            const size_t num_lanes = hn::Lanes(d);
+
+            size_t i = 0;
+            for (; i < x.size(); i += num_lanes)
+            {
+                // load the simd vectors for position, velocity, and acceleration
+
+                const auto vec_x = hn::LoadU(d, x.data() + i);
+                const auto vec_y = hn::LoadU(d, y.data() + i);
+                const auto vec_z = hn::LoadU(d, z.data() + i);
+
+                const auto vec_vx = hn::LoadU(d, vx.data() + i);
+                const auto vec_vy = hn::LoadU(d, vy.data() + i);
+                const auto vec_vz = hn::LoadU(d, vz.data() + i);
+
+                const auto vec_ax = hn::LoadU(d, ax.data() + i);
+                const auto vec_ay = hn::LoadU(d, ay.data() + i);
+                const auto vec_az = hn::LoadU(d, az.data() + i);
+
+                // semi implicit step, update velocity first, then position
+
+                hn::Store(hn::MulAdd(vec_ax, hn::Set(d, dt), vec_vx), d, vx.data() + i);
+                hn::Store(hn::MulAdd(vec_ay, hn::Set(d, dt), vec_vy), d, vy.data() + i);
+                hn::Store(hn::MulAdd(vec_az, hn::Set(d, dt), vec_vz), d, vz.data() + i);
+
+                hn::Store(hn::MulAdd(vec_vx, hn::Set(d, dt), vec_x), d, x.data() + i);
+                hn::Store(hn::MulAdd(vec_vy, hn::Set(d, dt), vec_y), d, y.data() + i);
+                hn::Store(hn::MulAdd(vec_vz, hn::Set(d, dt), vec_z), d, z.data() + i);
+
+                if (do_wrap)
+                {
+                    // toroidal wrap
+
+                    const auto vec_size = hn::Set(d, size);
+                    const auto vec_half = hn::Set(d, size * 0.5f);
+
+                    wrap(d, vec_x, vec_size);
+                    wrap(d, vec_y, vec_size);
+                    wrap(d, vec_z, vec_size);
+                }
+            }
+        }
     }
 }
