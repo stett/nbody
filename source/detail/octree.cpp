@@ -144,22 +144,31 @@ namespace nbody::detail
         {
             NBODY_PROFILE_ZONE();
 
-            // clear the arrays of node masses and counters
-            std::ranges::fill(node_masses, OctreeNodeMass{ .center = Vector(0,0,0), .mass = 0 });
-            std::ranges::fill(node_counters, 0);
-
-            detail::parallel_blocks(pool, leaf_nodes.size(), [&](const std::ptrdiff_t begin, const std::ptrdiff_t end)
             {
-                scalar::build_octree_masses_chunk(
-                    nodes,
-                    leaf_nodes,
-                    positions,
-                    masses,
-                    node_masses,
-                    node_counters,
-                    begin,
-                    end - begin);
-            });
+                NBODY_PROFILE_ZONE_NAMED("clear masses and counters");
+                detail::parallel_blocks(pool, nodes.size(), [&](const std::ptrdiff_t begin, const std::ptrdiff_t end)
+                {
+                    NBODY_PROFILE_ZONE_NAMED("clear masses and counters block");
+                    std::ranges::fill(node_masses.subspan(begin, end - begin), OctreeNodeMass{ .center = Vector(0,0,0), .mass = 0 });
+                    std::ranges::fill(node_counters.subspan(begin, end - begin), 0);
+                });
+            }
+
+            {
+                NBODY_PROFILE_ZONE_NAMED("build octree masses");
+                detail::parallel_blocks(pool, leaf_nodes.size(), [&](const std::ptrdiff_t begin, const std::ptrdiff_t end)
+                {
+                    scalar::build_octree_masses_chunk(
+                        nodes,
+                        leaf_nodes,
+                        positions,
+                        masses,
+                        node_masses,
+                        node_counters,
+                        begin,
+                        end - begin);
+                });
+            }
         }
     }
 }
