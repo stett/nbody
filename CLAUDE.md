@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Build
 
-CMake-based, C++20, targeting Windows with MSVC. Dependencies (BS thread-pool, simde, Catch2,
+CMake-based, C++20, targeting Windows with MSVC. Dependencies (BS thread-pool, Google Highway, Catch2,
 Cinder) are git submodules.
 
 ```bash

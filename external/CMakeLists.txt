@@ -3,24 +3,48 @@
 add_library(BS_thread_pool INTERFACE)
 target_include_directories(BS_thread_pool INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/thread-pool/include)
 
-# add simde, which supplies the x86 intrinsics vocabulary on every target rather than only
-# on x86: on x86-64 the simde_* calls compile to the intrinsics they name, and on arm64 they
-# become NEON. Unlike tracy this is not optional, so the missing-checkout case has to fail
-# here with something better than a header-not-found error from the first translation unit.
+# add google highway, which supplies the portable SIMD vocabulary: one source written
+# against hwy's ops compiles to SSE4/AVX2/AVX-512 on x86 and to NEON/SVE on arm64, with
+# the target chosen per translation unit (static dispatch) or per call (dynamic dispatch).
+# Unlike tracy this is not optional, so the missing-checkout case has to fail here with
+# something better than a header-not-found error from the first translation unit.
 #
-# Header-only, so an interface target rather than add_subdirectory: simde's own cmake exists
-# to build its test suite, which is large and not ours to run.
+# add_subdirectory rather than an interface target: highway is not header-only -- libhwy
+# carries the runtime target detection and the aligned allocator -- so the `hwy` target
+# has to actually be built.
 #
-# The include root is the repository root, making the include form <simde/x86/avx2.h>.
-# SYSTEM because these headers are not ours to keep warning-clean, matching the -external:I
-# treatment Vulkan's headers already get.
-if (NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/simde/simde/simde-common.h")
+# The include root is the repository root, making the include form <hwy/highway.h>.
+if (NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/highway/hwy/highway.h")
     message(FATAL_ERROR
-        "external/simde is empty. "
+        "external/highway is empty. "
         "Fetch it with: git submodule update --init --recursive")
 endif()
-add_library(simde INTERFACE)
-target_include_directories(simde SYSTEM INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/simde)
+
+# Everything highway builds beyond the library itself, turned off. These are plain cache
+# entries in highway's own cmake rather than option()s, so setting them here first is what
+# makes its `set(... CACHE ...)` calls no-ops. FORCE because a build directory configured
+# against an earlier revision would otherwise keep the defaults it cached. Tests matter
+# most: HWY_ENABLE_TESTS also fetches googletest over the network while configuring.
+set(HWY_ENABLE_TESTS OFF CACHE BOOL "" FORCE)
+set(HWY_ENABLE_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(HWY_ENABLE_CONTRIB OFF CACHE BOOL "" FORCE)
+set(HWY_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
+
+add_subdirectory(highway)
+
+# hwy_test (the test-only support library) and hwy_list_targets (a tool that prints the
+# compiled-in targets to stderr from a POST_BUILD step) are created unconditionally by
+# highway's cmake, HWY_ENABLE_TESTS notwithstanding. Nothing here links either, so keep
+# them out of ordinary builds; both remain buildable by name.
+set_target_properties(hwy_test hwy_list_targets PROPERTIES EXCLUDE_FROM_ALL ON)
+
+# SYSTEM, because these headers are not ours to keep warning-clean -- the same -external:I
+# treatment Vulkan's headers already get. add_subdirectory(highway SYSTEM) would say this
+# directly but needs cmake 3.25; promoting the interface include dirs by hand is the
+# equivalent for the 3.24 this tree requires.
+get_target_property(hwy_include_dirs hwy INTERFACE_INCLUDE_DIRECTORIES)
+set_target_properties(hwy PROPERTIES
+    INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${hwy_include_dirs}")
 
 # either half of tracy needs the submodule actually checked out
 if (NBODY_TRACY OR NBODY_TRACY_PROFILER)

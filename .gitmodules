@@ -7,9 +7,9 @@
 [submodule "external/tracy"]
 	path = external/tracy
 	url = https://github.com/wolfpld/tracy.git
-[submodule "external/simde"]
-	path = external/simde
-	url = https://github.com/simd-everywhere/simde.git
 [submodule "demo/external/Cinder"]
 	path = demo/external/Cinder
 	url = https://github.com/cinder/Cinder.git
+[submodule "external/highway"]
+	path = external/highway
+	url = https://github.com/google/highway.git

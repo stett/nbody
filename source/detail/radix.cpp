@@ -2,7 +2,7 @@
 #include <algorithm>
 #include <bit>
 #include <cassert>
-#include <simde/x86/avx2.h>
+#include <hwy/highway.h>
 
 namespace nbody::detail
 {
