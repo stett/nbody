@@ -1,4 +1,5 @@
 #pragma once
+#include <cassert>
 #include <cmath>
 #include <cstddef>
 #include <span>
@@ -87,52 +88,99 @@ namespace nbody::detail
             return hn::Sub(wrapped, half);
         }
 
-        void integrate_euler(
+        // Semi-implicit euler over the split body arrays, one SIMD vector of bodies at a
+        // time. Same step as the scalar integrate_euler above, and the two have to agree:
+        // a variant is chosen at run time, so the same scene must integrate the same way
+        // whichever one is driving it.
+        //
+        // Every span is indexed by body, and the caller is free to hand over any subrange
+        // of its arrays -- one worker's block of a parallel_blocks partition, typically.
+        // So nothing here may assume the pointers are vector-aligned or that the count is
+        // a whole number of vectors:
+        //
+        //  - the stores are StoreU. An aligned Store faults outright on a block whose
+        //    first body is not vector-aligned, which is most of them: block boundaries
+        //    come from dividing the body count by the worker count.
+        //  - the final partial vector goes through LoadN/StoreN, which touch only the
+        //    lanes that exist. A full-width store there would run past the end of the
+        //    block, over bodies another worker has in flight, and past the end of the
+        //    allocation itself for the last block -- corrupting the heap rather than
+        //    faulting, so the crash lands somewhere else entirely, later.
+        inline void integrate_euler(
             span<float> x, span<float> y, span<float> z,
             span<float> vx, span<float> vy, span<float> vz,
             span<float> ax, span<float> ay, span<float> az,
             const float dt, const float size, const bool do_wrap)
         {
+            const size_t n = x.size();
+            assert(y.size() == n && z.size() == n);
+            assert(vx.size() == n && vy.size() == n && vz.size() == n);
+            assert(ax.size() == n && ay.size() == n && az.size() == n);
+
             const hn::ScalableTag<float> d;
             const size_t num_lanes = hn::Lanes(d);
-            for (size_t i = 0; i < x.size(); i += num_lanes)
+
+            const auto vec_dt = hn::Set(d, dt);
+            const auto vec_size = hn::Set(d, size);
+
+            // A world size of zero or less has no interior to wrap into, and dividing by
+            // it would turn every position into a NaN. Same guard as scalar wrap().
+            const bool wrap_positions = do_wrap && size > 0.f;
+
+            // One vector of bodies at `i`. Templated on whether this is the tail rather
+            // than branching on the count, so the full-width loop keeps plain loads and
+            // stores; `count` is read only on the tail path.
+            const auto step = [&]<bool tail>(const size_t i, const size_t count)
             {
-                // load the simd vectors for position, velocity, and acceleration
-
-                const auto vec_x = hn::LoadU(d, x.data() + i);
-                const auto vec_y = hn::LoadU(d, y.data() + i);
-                const auto vec_z = hn::LoadU(d, z.data() + i);
-
-                const auto vec_vx = hn::LoadU(d, vx.data() + i);
-                const auto vec_vy = hn::LoadU(d, vy.data() + i);
-                const auto vec_vz = hn::LoadU(d, vz.data() + i);
-
-                const auto vec_ax = hn::LoadU(d, ax.data() + i);
-                const auto vec_ay = hn::LoadU(d, ay.data() + i);
-                const auto vec_az = hn::LoadU(d, az.data() + i);
-
-                // semi implicit step, update velocity first, then position
-
-                hn::Store(hn::MulAdd(vec_ax, hn::Set(d, dt), vec_vx), d, vx.data() + i);
-                hn::Store(hn::MulAdd(vec_ay, hn::Set(d, dt), vec_vy), d, vy.data() + i);
-                hn::Store(hn::MulAdd(vec_az, hn::Set(d, dt), vec_vz), d, vz.data() + i);
-
-                hn::Store(hn::MulAdd(vec_vx, hn::Set(d, dt), vec_x), d, x.data() + i);
-                hn::Store(hn::MulAdd(vec_vy, hn::Set(d, dt), vec_y), d, y.data() + i);
-                hn::Store(hn::MulAdd(vec_vz, hn::Set(d, dt), vec_z), d, z.data() + i);
-
-                if (do_wrap)
+                const auto load = [&](const span<float> v)
                 {
-                    // toroidal wrap
+                    if constexpr (tail)
+                        return hn::LoadN(d, v.data() + i, count);
+                    else
+                        return hn::LoadU(d, v.data() + i);
+                };
 
-                    const auto vec_size = hn::Set(d, size);
-                    const auto vec_half = hn::Set(d, size * 0.5f);
+                const auto store = [&](const auto v, const span<float> out)
+                {
+                    if constexpr (tail)
+                        hn::StoreN(v, d, out.data() + i, count);
+                    else
+                        hn::StoreU(v, d, out.data() + i);
+                };
 
-                    wrap(d, vec_x, vec_size);
-                    wrap(d, vec_y, vec_size);
-                    wrap(d, vec_z, vec_size);
+                // Semi-implicit: velocity first, and then position from the *new*
+                // velocity. Stepping position on the old velocity instead would make this
+                // explicit euler, which is a different (and less stable) integrator than
+                // the one every other variant runs.
+                const auto vec_vx = hn::MulAdd(load(ax), vec_dt, load(vx));
+                const auto vec_vy = hn::MulAdd(load(ay), vec_dt, load(vy));
+                const auto vec_vz = hn::MulAdd(load(az), vec_dt, load(vz));
+
+                auto vec_x = hn::MulAdd(vec_vx, vec_dt, load(x));
+                auto vec_y = hn::MulAdd(vec_vy, vec_dt, load(y));
+                auto vec_z = hn::MulAdd(vec_vz, vec_dt, load(z));
+
+                if (wrap_positions)
+                {
+                    vec_x = wrap(d, vec_x, vec_size);
+                    vec_y = wrap(d, vec_y, vec_size);
+                    vec_z = wrap(d, vec_z, vec_size);
                 }
-            }
+
+                store(vec_vx, vx);
+                store(vec_vy, vy);
+                store(vec_vz, vz);
+
+                store(vec_x, x);
+                store(vec_y, y);
+                store(vec_z, z);
+            };
+
+            size_t i = 0;
+            for (; i + num_lanes <= n; i += num_lanes)
+                step.template operator()<false>(i, num_lanes);
+            if (i < n)
+                step.template operator()<true>(i, n - i);
         }
     }
 }
