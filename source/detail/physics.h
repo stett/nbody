@@ -95,9 +95,7 @@ namespace nbody::detail
         {
             const hn::ScalableTag<float> d;
             const size_t num_lanes = hn::Lanes(d);
-
-            size_t i = 0;
-            for (; i < x.size(); i += num_lanes)
+            for (size_t i = 0; i < x.size(); i += num_lanes)
             {
                 // load the simd vectors for position, velocity, and acceleration
 

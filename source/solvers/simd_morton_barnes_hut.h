@@ -195,23 +195,31 @@ namespace nbody
                 const float theta = _state->theta;
                 const float G = _state->gravity;
                 const float size = _state->size;
-                detail::parallel_blocks(*_context->pool, _state->bodies.size(),
+                detail::parallel_blocks(*_context->pool, x.size(),
                     [this, theta, G, size](const size_t begin, const size_t end)
                     {
                         NBODY_PROFILE_ZONE_NAMED("barnes-hut block");
                         for (size_t i = begin; i < end; ++i)
                         {
-                            Body& body = _state->bodies[i];
-                            body.acc = { 0, 0, 0 };
+                            ax[i] = 0.f;
+                            ay[i] = 0.f;
+                            az[i] = 0.f;
+
+                            Vector pos = { x[i], y[i], z[i] };
+
                             detail::scalar::apply_octree(
                                 _nodes,
                                 _bounds,
                                 _node_masses,
-                                body.pos, [this, &body, G](const int32_t node_index)
+                                pos, [this, &pos, i, G](const int32_t node_index)
                                 {
                                     const detail::OctreeNodeMass& node_mass = _node_masses[node_index];
-                                    body.acc += detail::gravity(body.pos, body.radius, node_mass.center, node_mass.mass, G);
-                                }, theta, size);
+                                    Vector a = detail::gravity(pos, r[i], node_mass.center, node_mass.mass, G);
+                                    ax[i] += a.x;
+                                    ay[i] += a.y;
+                                    az[i] += a.z;
+                                }, theta, size
+                            );
                         }
                     }
                 );
@@ -233,14 +241,6 @@ namespace nbody
             NBODY_PROFILE_ZONE();
             const float size = _state->size;
             const bool wrap = _state->wrap;
-
-            /*
-            detail::simd::integrate_euler(
-                x, y, z,
-                vx, vy, vz,
-                ax, ay, az,
-                dt, size, wrap);
-            */
 
             detail::parallel_blocks(*_context->pool, _state->bodies.size(),
             [this, dt, size, wrap](const size_t begin, const size_t end)
@@ -300,6 +300,7 @@ namespace nbody
         {
             NBODY_PROFILE_ZONE();
 
+            if (r.size() != num_bodies) r.resize(num_bodies);
             if (m.size() != num_bodies) m.resize(num_bodies);
             if (x.size() != num_bodies) x.resize(num_bodies);
             if (y.size() != num_bodies) y.resize(num_bodies);
@@ -321,6 +322,7 @@ namespace nbody
             detail::parallel_for(*_context->pool, bodies.size(), [this, &bodies](const size_t i)
             {
                 const Body& body = bodies[i];
+                r[i] = body.radius;
                 m[i] = body.mass;
                 x[i] = body.pos.x;
                 y[i] = body.pos.y;
@@ -342,6 +344,7 @@ namespace nbody
             detail::parallel_for(*_context->pool, bodies.size(), [this, &bodies](const size_t i)
             {
                 Body& body = const_cast<Body&>(bodies[i]);
+                body.radius = r[i];
                 body.mass = m[i];
                 body.pos.x = x[i];
                 body.pos.y = y[i];
@@ -369,6 +372,7 @@ namespace nbody
         mutable bool _internal_dirty = false;   // has the internal data changed since the last time the shared data was updated
 
         // body properties
+        vector<float> r;            // radius
         vector<float> m;            // mass
         vector<float> x, y, z;      // position
         vector<float> vx, vy, vz;   // velocity
