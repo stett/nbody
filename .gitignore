@@ -6,3 +6,30 @@ cmake-build*
 # CPM cache for the tracy profiler's dependencies
 .cpm-cache/
 build-soa
+
+# CMake / build output
+build/
+out/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+compile_commands.json
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.VC.db
+*.VC.opendb
+
+# VS Code
+.vscode/
+
+# ImGui stored settings
+imgui.ini
+
+# AI tooling — shared config stays versioned, local state does not
+.claude/*
+!.claude/settings.json
+AGENTS.md
+GEMINI.md
