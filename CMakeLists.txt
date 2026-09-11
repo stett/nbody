@@ -39,7 +39,7 @@ add_subdirectory(external)
 
 # add nbody library
 file(GLOB_RECURSE sources "${CMAKE_CURRENT_SOURCE_DIR}/source/*.cpp")
-add_library(nbody STATIC ${sources})
+add_library(nbody STATIC ${sources} "source/solvers/simd_morton_dfs_barnes_hut.h")
 
 # link external libraries
 target_include_directories(nbody PUBLIC "include" "source")

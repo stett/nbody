@@ -10,6 +10,7 @@ namespace nbody
         CpuBarnesHut,          // O(n log n) tree approximation, serial tree construction phase, multithreaded query
         CpuBarnesHutMorton,    // O(n log n) tree approximation, multithread construction and query
         SimdBarnesHutMorton,   // O(n log n) tree approximation, multithread construction and query, SIMD query
+        SimdBarnesHutMortonDfs,// O(n log n) tree approximation, multithread construction and query, SIMD query
         GpuBruteForce,         // full vulkan compute, exact summation
         GpuBruteForceSoA,      // full vulkan compute, exact summation, rough SoA memory layout
         GpuBarnesHut,          // cpu tree construction, vulkan compute query, tree approximation

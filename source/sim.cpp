@@ -9,6 +9,7 @@
 #include "solvers/cpu_brute_force.h"
 #include "solvers/cpu_morton_barnes_hut.h"
 #include "solvers/simd_morton_barnes_hut.h"
+#include "solvers/simd_morton_dfs_barnes_hut.h"
 #include "solvers/gpu_solver.h"
 #include "solvers/gpu_solver_split.h"
 #include "solvers/gpu_solver_barnes_hut_morton_soa.h"
@@ -74,6 +75,7 @@ namespace
             t[size_t(Variant::CpuBarnesHut)] = &make<nbody::CpuBarnesHutSolver>;
             t[size_t(Variant::CpuBarnesHutMorton)] = &make<nbody::CpuMortonBarnesHutSolver>;
             t[size_t(Variant::SimdBarnesHutMorton)] = &make<nbody::SimdMortonBarnesHutSolver>;
+            t[size_t(Variant::SimdBarnesHutMortonDfs)] = &make<nbody::SimdMortonDfsBarnesHutSolver>;
             t[size_t(Variant::GpuBruteForce)] = &make_gpu<nbody::GpuSolver, nbody::Mode::N2>;
             t[size_t(Variant::GpuBruteForceSoA)] = &make_gpu<nbody::GpuSolverSplit, nbody::Mode::N2>;
             t[size_t(Variant::GpuBarnesHut)] = &make_gpu<nbody::GpuSolver, nbody::Mode::NLogN>;

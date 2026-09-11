@@ -58,7 +58,7 @@ void nbody::Demo::setup()
 
     // Prefer the GPU when one is usable. Best effort: a false return just leaves the
     // sim on its default CPU variant, and the combo shows why.
-    sim.set_variant(nbody::Variant::SimdBarnesHutMorton);
+    sim.set_variant(nbody::Variant::SimdBarnesHutMortonDfs);
 
     setWindowSize(1024, 1024);
 
