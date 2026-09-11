@@ -56,23 +56,6 @@ namespace nbody
             _external_dirty = true;
         }
 
-        /*
-        void update(const float dt) override
-        {
-            NBODY_PROFILE_ZONE();
-
-            // if external state has changed, update simd vectors
-            if (_external_dirty)
-            {
-                _external_dirty = false;
-                gather_bodies(_state->bodies);
-            }
-
-            // do the regular update (call accelerate and integrate)
-            CpuSolver::update(dt);
-        }
-        */
-
         void accelerate() override
         {
             NBODY_PROFILE_ZONE();

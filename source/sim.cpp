@@ -51,6 +51,8 @@ namespace
                 Variant::CpuBarnesHutMorton, "CPU Barnes-Hut (Morton)", "O(n log n) approximation, parallel construction", true, {} };
             t[size_t(Variant::SimdBarnesHutMorton)] = {
                 Variant::SimdBarnesHutMorton, "SIMD Barnes-Hut (Morton)", "O(n log n) approximation, parallel construction", true, {} };
+            t[size_t(Variant::SimdBarnesHutMortonDfs)] = {
+                Variant::SimdBarnesHutMortonDfs, "SIMD Barnes-Hut (Morton, DFS)", "O(n log n) approximation, parallel construction with DFS traversal", true, {} };
             t[size_t(Variant::GpuBruteForce)] = {
                 Variant::GpuBruteForce, "GPU brute force", "Vulkan compute, O(n^2) exact summation", false, "not probed" };
             t[size_t(Variant::GpuBruteForceSoA)] = {

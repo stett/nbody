@@ -89,6 +89,49 @@ namespace nbody::detail
             return (x > 0) - (x < 0);
         }
 
+        // return either +1 or -1, indicating which neighbor of the key at index i has a longer common prefix with it.
+        template <typename MortonT>
+        inline int32_t radix_node_direction(const span<const MortonT> sorted_keys, const int32_t i)
+        {
+            // get the common prefix length of the current key with its neighbors
+            const int32_t d0 = cpl(sorted_keys, i, i + 1);
+            const int32_t d1 = cpl(sorted_keys, i, i - 1);
+
+            // the "direction" of the node is determined by which neighbor has a longer common prefix
+            const int32_t d = sign(d0 - d1);
+
+            // return the direction
+            return d;
+        }
+
+        template <typename MortonT>
+        inline int32_t radix_node_range_length(const span<const MortonT> sorted_keys, const int32_t i, const int32_t direction, const int32_t cpl_parent)
+        {
+            // lmax is the current approximation for the top of the length of range of keys that shares
+            // this prefix. start with 2 and double it until we find a key whose cpl is less than the parent's cpl.
+            int32_t lmax = 2;
+            while (cpl(sorted_keys, i, i + (lmax * direction)) > cpl_parent)
+                lmax <<= 1;
+
+            // use a binary search to find the exact length of the range, along with
+            // the index of the last key in the range (might be > i or < i)
+            // 1) "div" is the temporary divisor for the binary search, starting at 2 and doubling each iteration
+            // 2) "l" is the current length of the range (minus one), starting at 0 and increasing each iteration
+            // 3) "t" is the amount by which we're considering increasing the length of the range
+            int32_t div = 2;
+            int32_t t = 0;
+            int32_t l = 0;
+            do {
+                t = lmax / div;
+                div <<= 1;
+                if (cpl(sorted_keys, i, i + ((l + t) * direction)) > cpl_parent)
+                    l += t;
+            } while (t > 1);
+
+            // return the range length
+            return l;
+        }
+
         // Build a radix tree from a sorted list of keys, populating a span of internal nodes in a flat array.
         //
         // This algorithm can be run on a section of nodes, so that the tree can be built in parallel, but must
@@ -111,44 +154,27 @@ namespace nbody::detail
 
             for (int32_t i = node_offset; i < static_cast<int32_t>(nodes.size()) + node_offset; ++i)
             {
-                // get the common prefix length of the current key with its neighbors
-                const int32_t d0 = cpl(sorted_keys, i, i + 1);
-                const int32_t d1 = cpl(sorted_keys, i, i - 1);
+                // either "+1" or "-1", indicating the direction of the node's range of keys,
+                // which is the side with the longer common prefix
+                const int32_t d = radix_node_direction(sorted_keys, i);
 
-                // the "direction" of the node is determined by which neighbor has a longer common prefix
-                const int32_t d = sign(d0 - d1);
+                // the common prefix length of the parent node is the cpl between this node and
+                // it's neighbor in the opposite direction of the range. this is the minimum cpl
+                // of all keys in this node's range, and is used to find the top of the range of
+                // keys that share this prefix.
+                const int32_t cpl_parent = cpl(sorted_keys, i, i - d);
+
+                // get the length of this node range
+                const int32_t l = radix_node_range_length(sorted_keys, i, d, cpl_parent);
 
                 // find the top of the range of keys that share this prefix
-                // 1) "i-d" is the index of the first key to one side of the range
-                // 2) "dmin" is smaller than the prefix length of elements within this range - this correlates
-                //           to the common prefix length of the parent node.
-                // 3) "lmax" is the max possible length of the range, a power of two
-                const int32_t dmin = cpl(sorted_keys, i, i - d);
-                int32_t lmax = 2;
-                while (cpl(sorted_keys, i, i + (lmax * d)) > dmin)
-                    lmax <<= 1;
-
-                // use a binary search to find the exact length of the range, along with
-                // the index of the last key in the range (might be > i or < i)
-                // 1) "div" is the temporary divisor for the binary search, starting at 2 and doubling each iteration
-                // 2) "l" is the current length of the range (minus one), starting at 0 and increasing each iteration
-                // 3) "t" is the amount by which we're considering increasing the length of the range
-                int32_t div = 2;
-                int32_t t = 0;
-                int32_t l = 0;
-                do {
-                    t = lmax / div;
-                    div <<= 1;
-                    if (cpl(sorted_keys, i, i + ((l + t) * d)) > dmin)
-                        l += t;
-                } while (t > 1);
                 const int32_t j = i + (l * d);
 
                 // use a binary search to find the split position of the range.
                 // this is the index of the last key whose bit following the common prefix is 0.
                 const int32_t dnode = cpl(sorted_keys, i, j);
-                div = 2;
-                t = 0;
+                int32_t div = 2;
+                int32_t t = 0;
                 int32_t s = 0;
                 do {
                     // the division must round up, otherwise the last step of the search can be
@@ -169,9 +195,7 @@ namespace nbody::detail
                 static constexpr size_t modulus = MortonT::modulus;
                 nodes[node_index].child0_index = child0;
                 nodes[node_index].child1_index = child1;
-                //node_cpl_deltas[i] = (dnode / modulus) - (max(dmin, 0) / modulus);
-                //node_child_counts[i] = (child0 >= 0) + (child1 >= 0);
-                node_counts[node_index].internals = (dnode / modulus) - (max(dmin, 0) / modulus);
+                node_counts[node_index].internals = (dnode / modulus) - (max(cpl_parent, 0) / modulus);
                 node_counts[node_index].leafs = (child0 >= 0) + (child1 >= 0);
 
                 // The last key of the node's range. Already computed above -- the range is
@@ -188,22 +212,9 @@ namespace nbody::detail
                 if (child1 <= 0) node_parents[-child1] = i;
             }
         }
+
+        //void radix_tree_order_dfs(const span<const int32_t> node_range_ends);
     }
-
-    /*
-    namespace simd
-    {
-        // compute the length of the common prefix between two keys
-        int32_t cpl(const uint32_t a, const uint32_t b);
-
-        int32_t sign(const int32_t x);
-
-        // Vectorized counterpart of scalar::radix_tree, with the same contract.
-        //
-        // Algorithm from (1), section 3.2
-        void radix_tree(const span<const uint32_t> sorted_keys, const span<pair<int32_t, int32_t>> nodes, int32_t node_offset = 0);
-    }
-    */
 
     inline namespace parallel
     {

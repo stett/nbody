@@ -57,23 +57,6 @@ namespace nbody
             _external_dirty = true;
         }
 
-        /*
-        void update(const float dt) override
-        {
-            NBODY_PROFILE_ZONE();
-
-            // if external state has changed, update simd vectors
-            if (_external_dirty)
-            {
-                _external_dirty = false;
-                gather_bodies(_state->bodies);
-            }
-
-            // do the regular update (call accelerate and integrate)
-            CpuSolver::update(dt);
-        }
-        */
-
         void accelerate() override
         {
             NBODY_PROFILE_ZONE();
@@ -114,7 +97,8 @@ namespace nbody
                                     static_cast<int32_t>(i),
                                 };
                             }
-                        });
+                        }
+                    );
                 }
 
                 {
@@ -138,10 +122,10 @@ namespace nbody
                             _index_map.resize(_keyed.size());
                     }
                     detail::parallel_for(*_context->pool, _keyed.size(), [this](const size_t i)
-                        {
-                            _keys[i] = _keyed[i].key;
-                            _index_map[i] = _keyed[i].body_index;
-                        });
+                    {
+                        _keys[i] = _keyed[i].key;
+                        _index_map[i] = _keyed[i].body_index;
+                    });
                 }
 
                 {

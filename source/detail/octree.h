@@ -583,10 +583,14 @@ namespace nbody::detail
                 NBODY_PROFILE_ZONE_NAMED("build radix tree");
                 {
                     NBODY_PROFILE_ZONE_NAMED("allocations");
-                    cache.radix_nodes.resize(keys.size() - 1);
-                    cache.radix_parents.resize(cache.radix_nodes.size());
-                    cache.node_counts.resize(cache.radix_nodes.size());
-                    cache.node_range_ends.resize(cache.radix_nodes.size());
+                    if (cache.radix_nodes.size() != keys.size() - 1)
+                        cache.radix_nodes.resize(keys.size() - 1);
+                    if (cache.radix_parents.size() != cache.radix_nodes.size())
+                        cache.radix_parents.resize(cache.radix_nodes.size());
+                    if (cache.node_counts.size() != cache.radix_nodes.size())
+                        cache.node_counts.resize(cache.radix_nodes.size());
+                    if (cache.node_range_ends.size() != cache.radix_nodes.size())
+                        cache.node_range_ends.resize(cache.radix_nodes.size());
                 }
                 parallel::radix_tree_thread_pool<MortonT>(pool, keys, cache.radix_nodes, cache.radix_parents, cache.node_counts, cache.node_range_ends);
             }
@@ -598,10 +602,10 @@ namespace nbody::detail
                     cache.node_count_totals.resize(cache.radix_nodes.size());
                 }
                 parallel_for(pool, cache.node_counts.size(), [&cache](const size_t i)
-                    {
-                        NBODY_PROFILE_ZONE_NAMED("compute octree node count totals chunk");
-                        cache.node_count_totals[i] = cache.node_counts[i].internals + cache.node_counts[i].leafs;
-                    });
+                {
+                    NBODY_PROFILE_ZONE_NAMED("compute octree node count totals chunk");
+                    cache.node_count_totals[i] = cache.node_counts[i].internals + cache.node_counts[i].leafs;
+                });
             }
 
             {

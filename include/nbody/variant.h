@@ -21,7 +21,7 @@ namespace nbody
 
     struct VariantInfo
     {
-        Variant variant = Variant::SimdBarnesHutMorton;
+        Variant variant = Variant::SimdBarnesHutMortonDfs;
 
         // display label, e.g. for a UI combo box
         const char* name = "";
