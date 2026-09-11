@@ -128,16 +128,19 @@ namespace nbody
                 {
                     // build_octree wants a plain span<const Morton>; this is a sequential
                     // copy over data that's already in its final sorted order, not a gather.
-                    NBODY_PROFILE_ZONE_NAMED("extract sorted keys");
+                    NBODY_PROFILE_ZONE_NAMED("extract sorted keys and indices");
                     {
                         NBODY_PROFILE_ZONE_NAMED("allocations");
                         if (_keys.size() != _keyed.size())
                             _keys.resize(_keyed.size());
+                        if (_index_map.size() != _keyed.size())
+                            _index_map.resize(_keyed.size());
                     }
                     detail::parallel_for(*_context->pool, _keyed.size(), [this](const size_t i)
-                        {
-                            _keys[i] = _keyed[i].key;
-                        });
+                    {
+                        _keys[i] = _keyed[i].key;
+                        _index_map[i] = _keyed[i].body_index;
+                    });
                 }
 
                 {
@@ -154,26 +157,6 @@ namespace nbody
                     NBODY_PROFILE_ZONE_NAMED("build masses");
 
                     {
-                        // Leaf slot i_leaf needs the body that produced the i_leaf-th sorted
-                        // key -- _keyed[i_leaf].body_index -- not body i_leaf itself. This is
-                        // the one random-access pass the fix costs: everywhere else only
-                        // touches the small (key, index) pairs, not the full body data.
-                        NBODY_PROFILE_ZONE_NAMED("gather positions and masses into sorted order");
-                        {
-                            NBODY_PROFILE_ZONE_NAMED("allocations");
-                            _body_positions.resize(_keyed.size());
-                            _body_masses.resize(_keyed.size());
-                        }
-                        detail::parallel_for(*_context->pool, _keyed.size(), [this](const size_t i_leaf)
-                            {
-                                NBODY_PROFILE_ZONE_NAMED("gather positions block");
-                                const int32_t i_body = _keyed[i_leaf].body_index;
-                                _body_positions[i_leaf] = _state->bodies[i_body].pos;
-                                _body_masses[i_leaf] = _state->bodies[i_body].mass;
-                            });
-                    }
-
-                    {
                         NBODY_PROFILE_ZONE_NAMED("propagate leaf node masses");
                         {
                             NBODY_PROFILE_ZONE_NAMED("allocations");
@@ -184,7 +167,7 @@ namespace nbody
                         }
                         {
                             NBODY_PROFILE_ZONE_NAMED("build node masses");
-                            detail::parallel::build_octree_masses(*_context->pool, _nodes, _cache.leaf_nodes, _body_positions, _body_masses, std::span(_node_masses).subspan(0, _nodes.size()), std::span(_node_counters).subspan(0, _nodes.size()));
+                            detail::simd::build_octree_masses(*_context->pool, _nodes, _cache.leaf_nodes, _index_map, m, x, y, z, span(_node_masses).subspan(0, _nodes.size()), span(_node_counters).subspan(0, _nodes.size()));
                         }
                     }
                 }
@@ -228,6 +211,8 @@ namespace nbody
 
         void integrate(const float dt) override
         {
+            NBODY_PROFILE_ZONE();
+
             // if external state has changed, update simd vectors
             if (_external_dirty)
             {
@@ -238,7 +223,6 @@ namespace nbody
             // this function modifies internal state, so mark it dirty
             _internal_dirty = true;
 
-            NBODY_PROFILE_ZONE();
             const float size = _state->size;
             const bool wrap = _state->wrap;
 
@@ -358,15 +342,15 @@ namespace nbody
             });
         }
 
-        vector<KeyedMorton> _keyed;
-        vector<Morton> _keys;
+        vector<KeyedMorton> _keyed; // array of morton keys to be sorted, retaining mapping back to original indices
+        vector<Morton> _keys;       // sorted array of pure morton keys
+        vector<int32_t> _index_map; // sorted array of original body indices, parallel to _keys
+
         detail::OctreeCache _cache;
         vector<detail::OctreeNode> _nodes;
         vector<detail::OctreeBounds<3>> _bounds;
         vector<detail::OctreeNodeMass> _node_masses;
         vector<std::atomic<uint8_t>> _node_counters;
-        vector<Vector> _body_positions;
-        vector<float> _body_masses;
 
         mutable bool _external_dirty = false;   // has the shared state object been modified externally to this object
         mutable bool _internal_dirty = false;   // has the internal data changed since the last time the shared data was updated

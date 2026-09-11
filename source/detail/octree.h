@@ -26,7 +26,6 @@ namespace nbody::detail
         int32_t parent = 0;
         int32_t next = 0;
         int32_t child = 0;
-        //int32_t child_count = 0;
 
         // TODO: pack this value into the sign bit for child
         bool is_leaf = false;
@@ -681,6 +680,28 @@ namespace nbody::detail
             build_octree(pool, keys, cache, octree_nodes, octree_bounds);
         }
 
-        void build_octree_masses(BS::thread_pool& pool, span<const OctreeNode> nodes, span<const int32_t> leaf_nodes, span<const Vector> positions, span<const float> masses, span<OctreeNodeMass> node_masses, span<std::atomic<uint8_t>> node_counters);
+        void build_octree_masses(
+            BS::thread_pool& pool,
+            span<const OctreeNode> nodes,
+            span<const int32_t> leaf_nodes,
+            span<const Vector> positions,
+            span<const float> masses,
+            span<OctreeNodeMass> node_masses,
+            span<std::atomic<uint8_t>> node_counters);
+    }
+
+    namespace simd
+    {
+        void build_octree_masses(
+            BS::thread_pool& pool,
+            const span<const OctreeNode> nodes,
+            const span<const int32_t> leaf_nodes,
+            const span<const int32_t> index_map,
+            const span<const float> m,
+            const span<const float> x,
+            const span<const float> y,
+            const span<const float> z,
+            const span<OctreeNodeMass> node_masses,
+            const span<std::atomic<uint8_t>> node_counters);
     }
 }

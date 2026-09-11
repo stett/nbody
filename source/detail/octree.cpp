@@ -1,6 +1,7 @@
 #include "detail/octree.h"
 #include "detail/morton.h"
 #include "detail/radix.h"
+#include "hwy/highway.h"
 #include <vector>
 #include <algorithm>
 #include <numeric>
@@ -168,6 +169,152 @@ namespace nbody::detail
                         begin,
                         end - begin);
                 });
+            }
+        }
+    }
+
+    namespace simd
+    {
+        namespace hn = hwy::HWY_NAMESPACE;
+
+        void build_octree_masses_chunk(
+            const span<const OctreeNode> nodes,
+            const span<const int32_t> leaf_nodes,
+            const span<const int32_t> index_map,
+            const span<const float> m,
+            const span<const float> x,
+            const span<const float> y,
+            const span<const float> z,
+            const span<OctreeNodeMass> node_masses,
+            const span<std::atomic<uint8_t>> node_counters,
+            const int32_t i_offset = 0, int32_t i_count = -1)
+        {
+            NBODY_PROFILE_ZONE();
+
+            assert(nodes.size() == node_masses.size());
+            assert(nodes.size() == node_counters.size());
+            assert(leaf_nodes.size() == index_map.size());
+            assert(leaf_nodes.size() == m.size());
+            assert(leaf_nodes.size() == x.size());
+            assert(leaf_nodes.size() == y.size());
+            assert(leaf_nodes.size() == z.size());
+
+            const hn::ScalableTag<float> d;
+
+            // clamp the iteration count to the range
+            i_count = (i_count < 0) ? static_cast<int32_t>(leaf_nodes.size() - i_offset) : i_count;
+            for (int32_t i_leaf_local = 0; i_leaf_local < i_count; ++i_leaf_local)
+            {
+                const int32_t i_leaf = i_leaf_local + i_offset;
+
+                // the mass/center of a leaf node is just the raw input data
+                int32_t i_octree = leaf_nodes[i_leaf];
+                int32_t i_body = index_map[i_leaf];
+                node_masses[i_octree] = { .center = { x[i_body], y[i_body], z[i_body] }, .mass = m[i_body] };
+
+                // if there was one node and it's the root, stop
+                if (i_octree == 0)
+                    continue;
+
+                // climb up the tree
+                do
+                {
+                    // get the parent node - if we're not the last child to get to this parent
+                    // then stop here.
+                    const int32_t i_parent = nodes[i_octree].parent;
+                    const OctreeNode& parent = nodes[i_parent];
+
+                    // count the number of children that this parent has
+                    int32_t child_count = 1;
+                    int32_t i_child = parent.child;
+                    while ((i_child = nodes[i_child].next) != parent.next) { ++child_count; }
+
+                    // algorithmically, a node's counter should never exceed its number of children
+                    assert(node_counters[i_parent] < child_count);
+                    if ((++node_counters[i_parent]) < child_count)
+                        break;
+
+                    // if we were the last child then sum all the children into the parent node's mass/center of mass
+                    OctreeNodeMass& parent_mass = node_masses[i_parent];
+                    i_child = parent.child;
+                    while (i_child != parent.next)
+                    {
+                        // add to the total mass, and shift the center
+                        const OctreeNodeMass& child_mass = node_masses[i_child];
+                        const float new_mass = parent_mass.mass + child_mass.mass;
+                        const float new_mass_inv = 1.f / new_mass;
+
+                        /*
+                        const float new_center_x = ((parent_mass.mass * parent_mass.center.x) + (child_mass.mass * child_mass.center.x)) * new_mass_inv;
+                        const float new_center_y = ((parent_mass.mass * parent_mass.center.y) + (child_mass.mass * child_mass.center.y)) * new_mass_inv;
+                        const float new_center_z = ((parent_mass.mass * parent_mass.center.z) + (child_mass.mass * child_mass.center.z)) * new_mass_inv;
+                        parent_mass = OctreeNodeMass{
+                            .center = Vector(new_center_x, new_center_y, new_center_z),
+                            .mass = new_mass,
+                        };
+                        */
+
+                        // Do vectorized computation of the new center of mass
+                        //
+                        // NOTE: The scalar version of this might be just as good depending on the hardware... hopefull it's not _faster_
+                        const auto vec_parent_mass = hn::Set(d, parent_mass.mass);
+                        const auto vec_parent_center = hn::LoadN(d, &parent_mass.center.x, 3);
+                        const auto vec_child_mass = hn::Set(d, child_mass.mass);
+                        const auto vec_child_center = hn::LoadN(d, &child_mass.center.x, 3);
+                        const auto vec_new_mass_inv = hn::Set(d, new_mass_inv);
+                        const auto vec_new_center = hn::Mul(vec_new_mass_inv, hn::Add(hn::Mul(vec_parent_mass, vec_parent_center), hn::Mul(vec_child_mass, vec_child_center)));
+                        hn::StoreN(vec_new_center, d, &parent_mass.center.x, 3);
+                        parent_mass.mass = new_mass;
+
+                        // go to this parent's next child
+                        i_child = nodes[i_child].next;
+                    }
+
+                    // the parent becomes the new child for the next iteration
+                    i_octree = i_parent;
+
+                } while (i_octree);
+            }
+        }
+
+        void build_octree_masses(
+            BS::thread_pool& pool,
+            const span<const OctreeNode> nodes,
+            const span<const int32_t> leaf_nodes,
+            const span<const int32_t> index_map,
+            const span<const float> m,
+            const span<const float> x,
+            const span<const float> y,
+            const span<const float> z,
+            const span<OctreeNodeMass> node_masses,
+            const span<std::atomic<uint8_t>> node_counters)
+        {
+            NBODY_PROFILE_ZONE();
+
+            {
+                NBODY_PROFILE_ZONE_NAMED("clear masses and counters");
+                detail::parallel_blocks(pool, nodes.size(), [&](const std::ptrdiff_t begin, const std::ptrdiff_t end)
+                    {
+                        NBODY_PROFILE_ZONE_NAMED("clear masses and counters block");
+                        std::ranges::fill(node_masses.subspan(begin, end - begin), OctreeNodeMass{ .center = Vector(0,0,0), .mass = 0 });
+                        std::ranges::fill(node_counters.subspan(begin, end - begin), 0);
+                    });
+            }
+
+            {
+                NBODY_PROFILE_ZONE_NAMED("build octree masses");
+                detail::parallel_blocks(pool, leaf_nodes.size(), [&](const std::ptrdiff_t begin, const std::ptrdiff_t end)
+                    {
+                        simd::build_octree_masses_chunk(
+                            nodes,
+                            leaf_nodes,
+                            index_map,
+                            m, x, y, z,
+                            node_masses,
+                            node_counters,
+                            begin,
+                            end - begin);
+                    });
             }
         }
     }
