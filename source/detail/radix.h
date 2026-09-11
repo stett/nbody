@@ -67,7 +67,7 @@ namespace nbody::detail
         // whenever the class gains a parameter -- and would then fall through to the overload
         // above, where `a ^ b` is not even valid.
         template <typename MortonT>
-        requires requires(const MortonT& m) { m.bits(); }
+            requires requires(const MortonT& m) { m.bits(); }
         int32_t cpl(const MortonT& m0, const MortonT& m1)
         {
             return cpl(m0.bits(), m1.bits());
@@ -98,10 +98,7 @@ namespace nbody::detail
             const int32_t d1 = cpl(sorted_keys, i, i - 1);
 
             // the "direction" of the node is determined by which neighbor has a longer common prefix
-            const int32_t d = sign(d0 - d1);
-
-            // return the direction
-            return d;
+            return sign(d0 - d1);
         }
 
         template <typename MortonT>
@@ -132,6 +129,47 @@ namespace nbody::detail
             return l;
         }
 
+        template <typename MortonT>
+        inline int32_t radix_node_split(const span<const MortonT> sorted_keys, const int32_t i, const int32_t direction, const int32_t node_len, const int32_t depth)
+        {
+            // use a binary search to find the split position of the range.
+            // this is the index of the last key whose bit following the common prefix is 0.
+            int32_t div = 2;
+            int32_t t = 0;
+            int32_t s = 0;
+            do {
+                // the division must round up, otherwise the last step of the search can be
+                // skipped and the split lands short of its true position. unlike "lmax" above,
+                // "l" is not a power of two, so this is not free.
+                t = (node_len + div - 1) / div;
+                div <<= 1;
+                if (cpl(sorted_keys, i, i + ((s + t) * direction)) > depth)
+                    s += t;
+            } while (t > 1);
+
+            // return the split position
+            return i + (s * direction) + min(direction, 0);
+        }
+
+        inline std::pair<int32_t, int32_t> radix_node_children(const int32_t i_min, const int32_t i_max, const int32_t i_split)
+        {
+            // the sign of the node's child indices indicates leaf or internal node, which can
+            // be determined by comparing each index at the ends of the range to the split index i_split;
+            const int32_t child0 = (i_min == i_split ? 1 : -1) * i_split;
+            const int32_t child1 = (i_max == i_split + 1 ? 1 : -1) * (i_split + 1);
+            return { child0, child1 };
+        }
+
+        inline int32_t radix_node_internal_count(const int32_t depth, const int32_t cpl_parent, const int32_t modulus)
+        {
+            return (depth / modulus) - (max(cpl_parent, 0) / modulus);
+        }
+
+        inline int32_t radix_node_leaf_count(std::pair<int32_t, int32_t> children)
+        {
+            return (children.first >= 0) + (children.second >= 0);
+        }
+
         // Build a radix tree from a sorted list of keys, populating a span of internal nodes in a flat array.
         //
         // This algorithm can be run on a section of nodes, so that the tree can be built in parallel, but must
@@ -152,54 +190,45 @@ namespace nbody::detail
 
             assert(nodes.size() + 1 <= sorted_keys.size());
 
-            for (int32_t i = node_offset; i < static_cast<int32_t>(nodes.size()) + node_offset; ++i)
+            for (int32_t i_first = node_offset; i_first < static_cast<int32_t>(nodes.size()) + node_offset; ++i_first)
             {
                 // either "+1" or "-1", indicating the direction of the node's range of keys,
                 // which is the side with the longer common prefix
-                const int32_t d = radix_node_direction(sorted_keys, i);
+                const int32_t dir = radix_node_direction(sorted_keys, i_first);
 
                 // the common prefix length of the parent node is the cpl between this node and
                 // it's neighbor in the opposite direction of the range. this is the minimum cpl
                 // of all keys in this node's range, and is used to find the top of the range of
                 // keys that share this prefix.
-                const int32_t cpl_parent = cpl(sorted_keys, i, i - d);
+                const int32_t cpl_parent = cpl(sorted_keys, i_first, i_first - dir);
 
                 // get the length of this node range
-                const int32_t l = radix_node_range_length(sorted_keys, i, d, cpl_parent);
+                const int32_t node_len = radix_node_range_length(sorted_keys, i_first, dir, cpl_parent);
 
-                // find the top of the range of keys that share this prefix
-                const int32_t j = i + (l * d);
+                // find the index of the last range that shares this prefix
+                const int32_t i_last = i_first + (node_len * dir);
+                const int32_t i_min = min(i_first, i_last);
+                const int32_t i_max = max(i_first, i_last);
+
+                // compute the "depth" of the radix node - that is, the number of bits in the
+                // common prefix of all keys in the range (ie, the cpl).
+                const int32_t depth = cpl(sorted_keys, i_first, i_last);
 
                 // use a binary search to find the split position of the range.
                 // this is the index of the last key whose bit following the common prefix is 0.
-                const int32_t dnode = cpl(sorted_keys, i, j);
-                int32_t div = 2;
-                int32_t t = 0;
-                int32_t s = 0;
-                do {
-                    // the division must round up, otherwise the last step of the search can be
-                    // skipped and the split lands short of its true position. unlike "lmax" above,
-                    // "l" is not a power of two, so this is not free.
-                    t = (l + div - 1) / div;
-                    div <<= 1;
-                    if (cpl(sorted_keys, i, i + ((s + t) * d)) > dnode)
-                        s += t;
-                } while (t > 1);
-                const int32_t k = i + (s * d) + min(d, 0);
+                const int32_t i_split = radix_node_split(sorted_keys, i_first, dir, node_len, depth);
 
                 // the sign of the node's child indices indicates leaf or internal node, which can
-                // be determined by comparing each index at the ends of the range to the split index k;
-                const int32_t node_index = i - node_offset;
-                const int32_t child0 = (min(i, j) == k ? 1 : -1) * k;
-                const int32_t child1 = (max(i, j) == k + 1 ? 1 : -1) * (k + 1);
-                static constexpr size_t modulus = MortonT::modulus;
-                nodes[node_index].child0_index = child0;
-                nodes[node_index].child1_index = child1;
-                node_counts[node_index].internals = (dnode / modulus) - (max(cpl_parent, 0) / modulus);
-                node_counts[node_index].leafs = (child0 >= 0) + (child1 >= 0);
+                // be determined by comparing each index at the ends of the range to the split index i_split;
+                const auto i_children = radix_node_children(i_min, i_max, i_split);
+                const int32_t node_index = i_first - node_offset;
+                nodes[node_index].child0_index = i_children.first;
+                nodes[node_index].child1_index = i_children.second;
+                node_counts[node_index].internals = radix_node_internal_count(depth, cpl_parent, MortonT::modulus);
+                node_counts[node_index].leafs = radix_node_leaf_count(i_children);
 
                 // The last key of the node's range. Already computed above -- the range is
-                // [min(i,j), max(i,j)] -- and previously discarded, but the octree needs it: a
+                // [min(i_first,i_last), max(i_first,i_last)] -- and previously discarded, but the octree needs it: a
                 // node's escape pointer is the first node of the range starting one key past
                 // its own, and nothing else recovers where a range ends.
                 //
@@ -207,9 +236,9 @@ namespace nbody::detail
                 // for which end: node_range_ends[m] > m says m's range *begins* at m, and so
                 // that the range starting at m spans two or more keys rather than being the
                 // lone key m.
-                node_range_ends[node_index] = max(i, j);
-                if (child0 <= 0) node_parents[-child0] = i;
-                if (child1 <= 0) node_parents[-child1] = i;
+                node_range_ends[node_index] = max(i_first, i_last);
+                if (i_children.first  <= 0) node_parents[-i_children.first]  = i_first;
+                if (i_children.second <= 0) node_parents[-i_children.second] = i_first;
             }
         }
 
