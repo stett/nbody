@@ -181,7 +181,9 @@ namespace nbody::detail
     }
 
     // Generic Morton code container type
-    template <typename BitsT = uint32_t, size_t modulus_t = 3,
+    template <
+        typename BitsT = uint32_t,
+        size_t modulus_t = 3,
         size_t bits_count_t = expand_bits_capacity<BitsT, modulus_t> * modulus_t>
     requires std::unsigned_integral<BitsT>
     class Morton

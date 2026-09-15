@@ -408,6 +408,70 @@ TEST_CASE("radix tree", "[radix]")
         }
     }
 
+    SECTION("hand computed, bit level 2")
+    {
+        // A modulus of one makes every resolved bit its own level, so the increments are plain
+        // prefix length differences and can be read straight off the key bits.
+        //
+        // must be ordered
+        const Keys keys{
+            0b000111,
+            0b010100,
+            0b100011,
+            0b101000,
+            0b110001,
+            0b110100,
+        };
+
+        using MortonT = Morton<uint32_t, 2, 6>;
+        const vector<MortonT> morton = morton_keys<MortonT>(keys);
+
+        for (const Builder<MortonT>& builder : builders<MortonT>)
+        {
+            INFO("builder: " << builder.name);
+            Tree tree = actual_tree(builder, morton, morton.size() - 1);
+            INFO("TEST");
+        }
+
+        /*
+        // Expected outcome, worked out by hand from the key bits.
+        //
+        // The ranges and splits are: node 0 covers keys [0,5] and splits at 3, node 3 covers
+        // [0,3] splitting at 1, node 1 covers [0,1] splitting at 0, node 2 covers [2,3], and
+        // node 4 covers [4,5]. Their prefix lengths (as 32 bit counts, so 27 means the keys
+        // first differ at bit 4) are 27, 28, 30, 29 and 29, and each increment is that prefix
+        // minus its parent's -- the root measuring from the domain root at level 0, so 27.
+        const Tree expected{
+            Nodes{
+                { -3, -4 },
+                {  0,  1 },
+                {  2,  3 },
+                { -1, -2 },
+                {  4,  5 },
+            },
+            NodeCounts{ { 27, 0 }, { 2, 2 }, { 1, 2 }, { 1, 0 }, { 2, 2 } },
+        };
+
+        using MortonT = Morton<uint32_t, 1>;
+        const vector<MortonT> morton = morton_keys<MortonT>(keys);
+
+        // the reference builder must reproduce the case we worked out by hand, otherwise it is
+        // not fit to serve as an oracle for everything below
+        const Tree reference = reference_tree(morton);
+        REQUIRE(reference.nodes.size() == expected.nodes.size());
+        {
+            INFO("builder: reference");
+            check_nodes(reference, expected, expected.nodes.size());
+        }
+
+        for (const Builder<MortonT>& builder : builders<MortonT>)
+        {
+            INFO("builder: " << builder.name);
+            check_nodes(actual_tree(builder, morton, expected.nodes.size()), expected, expected.nodes.size());
+        }*/
+    }
+
+
     SECTION("hand computed quadtree")
     {
         // The same case test_octree.cpp builds on: 2d morton codes, three levels of two bits,

@@ -162,7 +162,20 @@ namespace nbody::detail
 
         inline int32_t radix_node_internal_count(const int32_t depth, const int32_t cpl_parent, const int32_t modulus)
         {
-            return (depth / modulus) - (max(cpl_parent, 0) / modulus);
+            // "depth" in this case is the number of bits in the common prefix of all keys in the range (ie, the cpl).
+            // the number of octree levels resolved by this node is the number of bits in the common prefix divided by
+            // the number of bits per level (modulus).
+            const int32_t octree_levels = depth / modulus;
+
+            // "cpl_parent" is the common prefix length of the parent node relative to the current node. if we're more
+            // than one octree level down from the parent, then the parent node resolves some octree levels of its own.
+            //
+            // we apply a max(..., 0) clamp here because cpl_parent can be -1 in the case of the root node.
+            const int32_t octree_levels_parent = max(cpl_parent, 0) / modulus;
+
+            // to avoid double-counting the octree levels resolved by the parent from the number of octree levels
+            // resolved by this node, we subtract the parent's octree levels from our own.
+            return octree_levels - octree_levels_parent;
         }
 
         inline int32_t radix_node_leaf_count(std::pair<int32_t, int32_t> children)
@@ -226,17 +239,7 @@ namespace nbody::detail
                 nodes[node_index].child1_index = i_children.second;
                 node_counts[node_index].internals = radix_node_internal_count(depth, cpl_parent, MortonT::modulus);
                 node_counts[node_index].leafs = radix_node_leaf_count(i_children);
-
-                // The last key of the node's range. Already computed above -- the range is
-                // [min(i_first,i_last), max(i_first,i_last)] -- and previously discarded, but the octree needs it: a
-                // node's escape pointer is the first node of the range starting one key past
-                // its own, and nothing else recovers where a range ends.
-                //
-                // A node's index is always one end of its range, so this doubles as the test
-                // for which end: node_range_ends[m] > m says m's range *begins* at m, and so
-                // that the range starting at m spans two or more keys rather than being the
-                // lone key m.
-                node_range_ends[node_index] = max(i_first, i_last);
+                node_range_ends[node_index] = i_max; // used in build_octree
                 if (i_children.first  <= 0) node_parents[-i_children.first]  = i_first;
                 if (i_children.second <= 0) node_parents[-i_children.second] = i_first;
             }

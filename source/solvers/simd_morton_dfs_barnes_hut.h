@@ -136,6 +136,8 @@ namespace nbody
                     if (_bounds.size() != _cache.num_octree_nodes)
                         _bounds.resize(_cache.num_octree_nodes);
                     detail::parallel::build_octree<Morton>(*_context->pool, _keys, _cache, _nodes, _bounds);
+
+                    NBODY_PROFILE_PLOT("octree nodes", static_cast<int64_t>(_nodes.size()));
                 }
 
                 {
