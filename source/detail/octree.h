@@ -66,35 +66,64 @@ namespace nbody::detail
     };
 
     // A radix tree needs at least one split to exist, so build_octree's usual path requires
-    // at least two keys -- with fewer, cache.offsets and cache.node_count_totals end up empty
-    // and calling .back() on them below is undefined behavior. Handle 0 and 1 keys directly
-    // instead of letting them fall into that path. Returns true if it handled the input.
+    // at least two keys. With fewer, cache.offsets and cache.node_count_totals end up empty
+    // and calling .back() on them is undefined behavior -- and at zero keys the
+    // `radix_nodes.resize(keys.size() - 1)` that precedes them underflows a size_t and asks
+    // for SIZE_MAX nodes. Handle 0 and 1 keys directly instead of letting them reach that
+    // path.
+    //
+    // Split into a cache half and a node half because the build itself is split that way:
+    // build_octree_cache sizes the tree and has no node array to write, while build_octree
+    // has the node array and takes the sizing as given. One function straddling both is what
+    // made the original uncallable from either, which is why it ended up commented out.
+    // The two must agree on the node count -- build_octree asserts as much.
+    //
+    // Returns true if it handled the input, in which case the caller must not continue into
+    // the general path.
     template <typename MortonT>
-    bool try_build_degenerate_octree(const span<const MortonT> keys, OctreeCache& cache, vector<OctreeNode>& octree_nodes, vector<OctreeBounds<MortonT::modulus>>& octree_bounds)
+    bool try_build_degenerate_octree_cache(const span<const MortonT> keys, OctreeCache& cache)
     {
-        using OctreeBoundsT = OctreeBounds<MortonT::modulus>;
+        if (keys.size() > 1)
+            return false;
 
-        if (keys.size() == 0)
-        {
-            octree_nodes.clear();
-            octree_bounds.clear();
-            cache.leaf_nodes.clear();
-            return true;
-        }
+        // Cleared rather than left alone: the cache is reused across frames, so a stale
+        // radix tree from a larger input would otherwise still be sitting here, and
+        // parallel::build_octree partitions its chunks over radix_nodes.size().
+        cache.radix_nodes.clear();
+        cache.radix_parents.clear();
+        cache.node_counts.clear();
+        cache.node_range_ends.clear();
+        cache.node_count_totals.clear();
+        cache.offsets.clear();
+
+        // one key is both the root and its own leaf, so it maps to node 0; no keys is no tree
+        cache.leaf_nodes.assign(keys.size(), 0);
+        cache.num_octree_nodes = keys.size();
+        return true;
+    }
+
+    // The node-array half of the degenerate case. See try_build_degenerate_octree_cache above.
+    template <typename MortonT>
+    bool try_build_degenerate_octree(
+        const span<const MortonT> keys,
+        const span<OctreeNode> octree_nodes,
+        const span<OctreeBounds<MortonT::modulus>> octree_bounds)
+    {
+        if (keys.size() > 1)
+            return false;
 
         if (keys.size() == 1)
         {
-            // the one key is both the root and its own leaf, covering the whole domain
-            OctreeBoundsT bounds{ .center = {}, .half_extent = 0.5f };
-            std::fill(bounds.center.begin(), bounds.center.end(), 0.5f);
-
-            octree_nodes.assign(1, OctreeNode{ .parent = 0, .next = 0, .child = 0, .is_leaf = true });
-            octree_bounds.assign(1, bounds);
-            cache.leaf_nodes.assign(1, 0);
-            return true;
+            // The one key is both the root and its own leaf, covering the whole domain. Its
+            // child index is the key it holds, which is the convention every other leaf uses,
+            // and next is 0 -- which doubles as the "traversal finished" sentinel, so
+            // apply_octree visits this node once and stops.
+            octree_nodes[0] = OctreeNode{ .parent = 0, .next = 0, .child = 0, .is_leaf = true };
+            std::fill(octree_bounds[0].center.begin(), octree_bounds[0].center.end(), 0.5f);
+            octree_bounds[0].half_extent = 0.5f;
         }
 
-        return false;
+        return true;
     }
 
     namespace scalar
@@ -334,6 +363,11 @@ namespace nbody::detail
             using OctreeBoundsT = OctreeBounds<MortonT::modulus>;
             using VectorT = typename OctreeBoundsT::VectorT;
 
+            // 0 and 1 keys produce no radix tree, so the spans consulted below are empty and
+            // node_offsets.back() would be undefined. Handle those shapes and stop.
+            if (try_build_degenerate_octree<MortonT>(keys, octree_nodes, octree_bounds))
+                return;
+
             // count the number of octree nodes, allocate.
             // make sure it matches the output we expect
             const int32_t num_nodes = 1 + node_offsets.back() + node_totals.back();
@@ -476,8 +510,9 @@ namespace nbody::detail
             NBODY_PROFILE_ZONE();
             using OctreeBoundsT = OctreeBounds<MortonT::modulus>;
 
-            //if (try_build_degenerate_octree<MortonT>(keys, cache, octree_nodes, octree_bounds))
-            //    return;
+            // 0 and 1 keys have no radix tree to build; see the helper for why
+            if (try_build_degenerate_octree_cache<MortonT>(keys, cache))
+                return cache.num_octree_nodes;
 
             {
                 NBODY_PROFILE_ZONE_NAMED("build radix tree");
@@ -615,8 +650,9 @@ namespace nbody::detail
             NBODY_PROFILE_ZONE();
             using OctreeBoundsT = OctreeBounds<MortonT::modulus>;
 
-            //if (try_build_degenerate_octree<MortonT>(keys, cache, octree_nodes, octree_bounds))
-            //    return;
+            // 0 and 1 keys have no radix tree to build; see the helper for why
+            if (try_build_degenerate_octree_cache<MortonT>(keys, cache))
+                return cache.num_octree_nodes;
 
             {
                 NBODY_PROFILE_ZONE_NAMED("build radix tree");
@@ -689,6 +725,12 @@ namespace nbody::detail
 
             assert(cache.num_octree_nodes == octree_nodes.size());
             assert(cache.num_octree_nodes == octree_bounds.size());
+
+            // Needed here as well as inside scalar::build_octree: the partition below is over
+            // radix_nodes, which is empty for 0 and 1 keys, so no chunk runs and the scalar
+            // builder is never reached to write the degenerate node.
+            if (try_build_degenerate_octree<MortonT>(keys, octree_nodes, octree_bounds))
+                return;
 
             parallel_blocks(pool, cache.radix_nodes.size(), [&](const std::ptrdiff_t begin, const std::ptrdiff_t end)
             {
