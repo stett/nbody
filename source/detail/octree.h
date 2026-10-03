@@ -229,6 +229,7 @@ namespace nbody::detail
                 const span<const int32_t> leaf_nodes,
                 int32_t i_radix)
             {
+                // traverse the radix tree down to the first node that resolved a level, or to a leaf if none did
                 while (node_counts[i_radix].internals == 0 && radix_nodes[i_radix].child0_index < 0)
                     i_radix = -radix_nodes[i_radix].child0_index;
 
@@ -271,16 +272,16 @@ namespace nbody::detail
             {
                 // nothing follows the last key, and 0 is the root, so it doubles as the
                 // "traversal finished" sentinel
-                if (i_key_end >= static_cast<int32_t>(keys.size()) - 1)
+                static const int32_t i_radix = i_key_end + 1;
+                if (i_radix >= static_cast<int32_t>(keys.size()))
                     return 0;
 
                 // A radix node's index is one end of its range, so node_range_ends[m] > m says
                 // m's range *begins* at m: the sibling spans two or more keys and is that radix
                 // node. Otherwise the sibling is the lone key m.
-                const int32_t m = i_key_end + 1;
-                return (m < static_cast<int32_t>(radix_nodes.size()) && node_range_ends[m] > m)
-                    ? find_first_octree_node(radix_nodes, node_counts, node_offsets, leaf_nodes, m)
-                    : leaf_nodes[m];
+                return (i_radix < static_cast<int32_t>(radix_nodes.size()) && node_range_ends[i_radix] > i_radix)
+                    ? find_first_octree_node(radix_nodes, node_counts, node_offsets, leaf_nodes, i_radix)
+                    : leaf_nodes[i_radix];
             }
 
             // The level a radix node's own prefix reaches: level 0 is the whole domain, level 1
@@ -397,14 +398,7 @@ namespace nbody::detail
 
                 const NodeCount node_count = node_counts[i_radix];
 
-                // A radix node that resolved no level and owns no leaf produces nothing. Its
-                // block is empty, so 1 + node_offsets[i_radix] names the *next* node's block --
-                // or, when it is the last radix node, one past the array.
-                //
-                // An early out rather than the thing that keeps the index in bounds: nothing
-                // below writes at i_node_0 unconditionally any more, so removing this changes
-                // no output. Worth stating regardless, because a write placed at the head of a
-                // block is exactly what used to reach past the end.
+                // this radix node produced zero octree nodes; early out
                 if (node_count.internals + node_count.leafs == 0)
                     continue;
 
@@ -412,6 +406,7 @@ namespace nbody::detail
                 const int32_t i_node_0 = 1 + node_offsets[i_radix];
 
                 // every node of this chain covers the same key range, so one escape serves them all
+                // in other words, they all share the same "next"
                 const int32_t i_next = find_octree_next(keys, radix_nodes, node_counts, node_range_ends, node_offsets, leaf_nodes, node_range_ends[i_radix]);
 
                 // this radix node's own level, wanted once: its chain ends there and its leafs
