@@ -272,16 +272,16 @@ namespace nbody::detail
             {
                 // nothing follows the last key, and 0 is the root, so it doubles as the
                 // "traversal finished" sentinel
-                static const int32_t i_radix = i_key_end + 1;
-                if (i_radix >= static_cast<int32_t>(keys.size()))
+                static const int32_t i_radix_next = i_key_end + 1;
+                if (i_radix_next >= static_cast<int32_t>(keys.size()))
                     return 0;
 
                 // A radix node's index is one end of its range, so node_range_ends[m] > m says
                 // m's range *begins* at m: the sibling spans two or more keys and is that radix
                 // node. Otherwise the sibling is the lone key m.
-                return (i_radix < static_cast<int32_t>(radix_nodes.size()) && node_range_ends[i_radix] > i_radix)
-                    ? find_first_octree_node(radix_nodes, node_counts, node_offsets, leaf_nodes, i_radix)
-                    : leaf_nodes[i_radix];
+                return (i_radix_next < static_cast<int32_t>(radix_nodes.size()) && node_range_ends[i_radix_next] > i_radix_next)
+                    ? find_first_octree_node(radix_nodes, node_counts, node_offsets, leaf_nodes, i_radix_next)
+                    : leaf_nodes[i_radix_next];
             }
 
             // The level a radix node's own prefix reaches: level 0 is the whole domain, level 1
@@ -409,8 +409,7 @@ namespace nbody::detail
                 // in other words, they all share the same "next"
                 const int32_t i_next = find_octree_next(keys, radix_nodes, node_counts, node_range_ends, node_offsets, leaf_nodes, node_range_ends[i_radix]);
 
-                // this radix node's own level, wanted once: its chain ends there and its leafs
-                // sit one below it
+                // this radix node's level: its chain ends there and its leafs sit one below it
                 const int32_t level = find_octree_level(radix_nodes, keys, i_radix);
 
                 // The chain covers exactly the levels this radix node's parent left unresolved,
@@ -451,7 +450,10 @@ namespace nbody::detail
 
                     // any key in the range will do: they all share this node's cell, because
                     // the node is the level at which they still agree
-                    octree_bounds[i_node] = find_octree_bounds<MortonT>(i_level++, keys[node_range_ends[i_radix]].bits());
+                    octree_bounds[i_node] = find_octree_bounds<MortonT>(i_level, keys[node_range_ends[i_radix]].bits());
+
+                    // Increment the level counter
+                    i_level++;
                 }
 
                 // the leafs hang from the deepest node of the chain, or from whatever is above
