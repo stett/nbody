@@ -1,4 +1,7 @@
 # stett/nbody
+
+**Work in Progress**
+
 Gpu/cpu parallel n-body gravity simulator which uses the barnes-hut method.
 
 This repository contains the simulation library, its test suite, and an optional Cinder-based
