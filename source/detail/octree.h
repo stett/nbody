@@ -272,7 +272,7 @@ namespace nbody::detail
             {
                 // nothing follows the last key, and 0 is the root, so it doubles as the
                 // "traversal finished" sentinel
-                static const int32_t i_radix_next = i_key_end + 1;
+                const int32_t i_radix_next = i_key_end + 1;
                 if (i_radix_next >= static_cast<int32_t>(keys.size()))
                     return 0;
 
